@@ -24,6 +24,7 @@ internal sealed class Companion
     private readonly GameDetector _detector;
     private readonly GeminiClient _gemini;
     private readonly GameMemoryStore _memory;
+    private readonly HistoryPanel _panel;
     private readonly object _gate = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _summarizing = new();
 
@@ -35,13 +36,18 @@ internal sealed class Companion
     private int _session;
     private long _pressTicks;
     private MicRecorder? _recorder;
+    private LiveTranscriber? _transcriber;
+    private long _lastTapTicks;   // çift dokunuş (geçmiş paneli) tespiti
+    private bool _ignoreRelease;  // paneli kapatan basışın bırakışı
     private Task<CaptureResult>? _capture;
     private GameContext? _game;
     private IntPtr _monitor;
     private CancellationTokenSource? _cts;
 
-    public Companion(Func<Settings> settings, OverlayWindow overlay, GameDetector detector, GeminiClient gemini, GameMemoryStore memory)
+    public Companion(Func<Settings> settings, OverlayWindow overlay, HistoryPanel panel, GameDetector detector,
+                     GeminiClient gemini, GameMemoryStore memory)
     {
+        _panel = panel;
         _memory = memory;
         _settings = settings;
         _overlay = overlay;
@@ -54,11 +60,19 @@ internal sealed class Companion
     public bool ShouldHandle()
     {
         var s = _settings();
-        return !s.ActiveOnlyInKnownGames || _detector.IsKnownGameForeground();
+        return _panel.IsOpen || !s.ActiveOnlyInKnownGames || _detector.IsKnownGameForeground();
     }
 
     public void OnPressed()
     {
+        // Panel açıksa bu basış yalnızca paneli kapatır
+        if (_panel.IsOpen)
+        {
+            _ignoreRelease = true;
+            _overlay.Invoke(_ => _panel.Close(restoreFocus: true));
+            return;
+        }
+
         var s = _settings();
         int id;
         lock (_gate)
@@ -68,6 +82,8 @@ internal sealed class Companion
             _cts = new CancellationTokenSource();
             _recorder?.Cancel();
             _recorder = null;
+            _transcriber?.Cancel();
+            _transcriber = null;
             _pressTicks = Stopwatch.GetTimestamp();
         }
 
@@ -80,15 +96,32 @@ internal sealed class Companion
         var capCfg = s.Capture;
         _capture = Task.Run(() => ScreenCapture.Capture(fg, capCfg));
 
+        // Canlı yazı: bağlantı mikrofonla paralel kurulur, o arada gelen ses kanalda bekler
+        LiveTranscriber? tr = null;
+        var key = s.ResolvedApiKey;
+        if (s.LiveTranscription && !string.IsNullOrEmpty(key) && !string.IsNullOrWhiteSpace(s.LiveTranscriptionModel))
+        {
+            tr = new LiveTranscriber(key, s.LiveTranscriptionModel.Trim(), text =>
+            {
+                if (Volatile.Read(ref _session) == id) _overlay.Invoke(o => o.SetLiveText(text));
+            }, startDelayMs: s.MinHoldMs);
+            tr.Start();
+        }
+
         // Mikrofonu aç
         try
         {
-            var rec = new MicRecorder(s.MicDevice);
+            var rec = new MicRecorder(s.MicDevice) { ChunkReady = tr == null ? null : tr.Push };
             rec.Start();
-            lock (_gate) { if (id == _session) _recorder = rec; else rec.Cancel(); }
+            lock (_gate)
+            {
+                if (id == _session) { _recorder = rec; _transcriber = tr; }
+                else { rec.Cancel(); tr?.Cancel(); }
+            }
         }
         catch (Exception ex)
         {
+            tr?.Cancel();
             Log.Error("Mikrofon", ex);
             var mon = _monitor;
             _overlay.Invoke(o => o.ShowError(ex.Message, mon));
@@ -108,8 +141,14 @@ internal sealed class Companion
     public void OnReleased()
     {
         var s = _settings();
+        if (_ignoreRelease)
+        {
+            _ignoreRelease = false;
+            return;
+        }
         int id;
         MicRecorder? rec;
+        LiveTranscriber? tr;
         double heldMs;
         CancellationToken ct;
         lock (_gate)
@@ -117,25 +156,62 @@ internal sealed class Companion
             id = _session;
             rec = _recorder;
             _recorder = null;
+            tr = _transcriber;
+            _transcriber = null;
             heldMs = Stopwatch.GetElapsedTime(_pressTicks).TotalMilliseconds;
             ct = _cts?.Token ?? CancellationToken.None;
         }
-        if (rec == null) return;
+        if (rec == null) { tr?.Cancel(); return; }
 
         if (heldMs < s.MinHoldMs)
         {
-            // Kısa dokunuş = kutuyu kapat
+            // Kısa dokunuş = kutuyu kapat; hızlı ikinci dokunuş = geçmiş panelini aç
             rec.Cancel();
+            tr?.Cancel();
             _cts?.Cancel();
-            _overlay.Invoke(o => o.Dismiss());
+            bool doubleTap = _lastTapTicks != 0 && Stopwatch.GetElapsedTime(_lastTapTicks).TotalMilliseconds < DoubleTapMs;
+            _lastTapTicks = doubleTap ? 0 : Stopwatch.GetTimestamp();
+            if (doubleTap) OpenHistory();
+            else _overlay.Invoke(o => o.Dismiss());
             return;
         }
+        _lastTapTicks = 0;
 
-        _ = ProcessAsync(id, rec, heldMs, ct);
+        _ = ProcessAsync(id, rec, tr, heldMs, ct);
     }
 
-    private async Task ProcessAsync(int id, MicRecorder rec, double heldMs, CancellationToken ct)
+    private const double DoubleTapMs = 500;
+
+    /// <summary>
+    /// Önceki sorular panelini açar: ön plandaki oyunun geçmişi; boşsa bu oturumda son soru sorulan oyun,
+    /// o da yoksa hafızası en son güncellenen oyun. Herhangi bir iş parçacığından çağrılabilir.
+    /// </summary>
+    public void OpenHistory()
     {
+        var game = _game?.GameName;
+        var items = string.IsNullOrEmpty(game) ? Array.Empty<MemoryExchange>() : _memory.History(game);
+        foreach (var alt in new[] { LastGameName, _memory.MostRecentGame() })
+        {
+            if (items.Count > 0) break;
+            if (string.IsNullOrEmpty(alt) || alt == game) continue;
+            var altItems = _memory.History(alt);
+            if (altItems.Count == 0) continue;
+            game = alt;
+            items = altItems;
+        }
+        var name = game ?? "Bilinmeyen oyun";
+        var fg = Win32.GetForegroundWindow();
+        var monitor = _monitor != IntPtr.Zero ? _monitor : Win32.MonitorFromWindow(fg, Win32.MONITOR_DEFAULTTONEAREST);
+        _overlay.Invoke(o =>
+        {
+            o.HideNow();
+            _panel.Open(name, items, monitor, fg);
+        });
+    }
+
+    private async Task ProcessAsync(int id, MicRecorder rec, LiveTranscriber? tr, double heldMs, CancellationToken ct)
+    {
+        bool trFinishing = false;
         var s = _settings();
         var game = _game ?? new GameContext(IntPtr.Zero, "", "", "Bilinmeyen oyun", false, null, null);
         var monitor = _monitor;
@@ -145,6 +221,8 @@ internal sealed class Companion
             // Son hecenin kesilmemesi için kısa kuyruk kaydı
             if (s.TailRecordMs > 0) await Task.Delay(s.TailRecordMs, ct).ConfigureAwait(false);
             var audio = await rec.StopAsync().ConfigureAwait(false);
+            // Son metin geri çağrıyla kutuya gelir; ana isteği bekletme
+            if (tr != null) { trFinishing = true; _ = tr.FinishAsync(); }
             if (ct.IsCancellationRequested || id != Volatile.Read(ref _session)) return;
 
             if (audio == null || audio.Seconds < 0.25)
@@ -245,6 +323,10 @@ internal sealed class Companion
             Log.Error("İstek başarısız", ex);
             if (id == Volatile.Read(ref _session))
                 _overlay.Invoke(o => o.ShowError("Hata: " + ex.Message, monitor));
+        }
+        finally
+        {
+            if (!trFinishing) tr?.Cancel();
         }
     }
 

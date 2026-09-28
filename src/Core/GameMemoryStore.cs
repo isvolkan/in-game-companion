@@ -39,6 +39,8 @@ internal sealed class GameMemoryData
     public List<MemoryNote> Notes { get; set; } = new();
     /// <summary>Henüz özete katılmamış soru-cevaplar.</summary>
     public List<MemoryExchange> Exchanges { get; set; } = new();
+    /// <summary>Geçmiş paneli için tüm soru-cevaplar (özetlemeden etkilenmez, tam cevap).</summary>
+    public List<MemoryExchange> History { get; set; } = new();
     public int TotalQuestions { get; set; }
     public DateTime FirstSeen { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
@@ -62,7 +64,7 @@ internal sealed record MemoryUpdate(bool NoteAdded, bool NotesCleared, string? N
 /// </summary>
 internal sealed class GameMemoryStore
 {
-    private const int MaxQuests = 30, MaxRegions = 20, MaxNotes = 60, MaxExchanges = 40;
+    private const int MaxQuests = 30, MaxRegions = 20, MaxNotes = 60, MaxExchanges = 40, MaxHistory = 300;
 
     private readonly Dictionary<string, GameMemoryData> _cache = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
@@ -114,6 +116,18 @@ internal sealed class GameMemoryStore
             if (!string.IsNullOrWhiteSpace(m.CurrentRegion)) parts.Add($"son görülen bölge: {m.CurrentRegion}");
             if (m.Quests.Count > 1) parts.Add($"şimdiye kadar {m.Quests.Count} görev görüldü");
             return parts.Count == 0 ? null : string.Join("; ", parts);
+        }
+    }
+
+    /// <summary>Geçmiş paneli için soru-cevaplar (en yeni başta, kopya).</summary>
+    public IReadOnlyList<MemoryExchange> History(string game)
+    {
+        lock (_gate)
+        {
+            return Get(game).History
+                .AsEnumerable().Reverse()
+                .Select(e => new MemoryExchange { Q = e.Q, A = e.A, At = e.At })
+                .ToList();
         }
     }
 
@@ -194,6 +208,13 @@ internal sealed class GameMemoryStore
                 At = DateTime.Now,
             });
             if (m.Exchanges.Count > MaxExchanges) m.Exchanges.RemoveAt(0);
+            m.History.Add(new MemoryExchange
+            {
+                Q = question.Trim(),
+                A = answer.Length > 4000 ? answer[..4000] + "…" : answer.Trim(),
+                At = m.Exchanges[^1].At,
+            });
+            if (m.History.Count > MaxHistory) m.History.RemoveAt(0);
             m.TotalQuestions++;
             Save(m);
             return summarizeAfter > 0 && m.Exchanges.Count >= summarizeAfter;
@@ -234,6 +255,19 @@ internal sealed class GameMemoryStore
         }
     }
 
+    /// <summary>Dosyası en son güncellenen oyunun adı (yoksa null).</summary>
+    public string? MostRecentGame()
+    {
+        try
+        {
+            if (!Directory.Exists(Dir)) return null;
+            var file = new DirectoryInfo(Dir).GetFiles("*.json").OrderByDescending(f => f.LastWriteTimeUtc).FirstOrDefault();
+            if (file == null) return null;
+            lock (_gate) return Get(Path.GetFileNameWithoutExtension(file.Name)).Game;
+        }
+        catch { return null; }
+    }
+
     public IReadOnlyList<string> KnownGames()
     {
         try
@@ -263,6 +297,10 @@ internal sealed class GameMemoryStore
             var m = JsonSerializer.Deserialize<GameMemoryData>(File.ReadAllText(path), Json);
             if (m == null) return null;
             m.Quests ??= new(); m.Regions ??= new(); m.Notes ??= new(); m.Exchanges ??= new();
+            m.History ??= new();
+            // v0.2 dosyaları: geçmiş henüz yoksa özetlenmemiş kayıtlardan başlat
+            if (m.History.Count == 0 && m.Exchanges.Count > 0)
+                m.History.AddRange(m.Exchanges.Select(e => new MemoryExchange { Q = e.Q, A = e.A, At = e.At }));
             m.Summary ??= "";
             return m;
         }

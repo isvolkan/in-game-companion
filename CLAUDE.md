@@ -103,6 +103,8 @@ src/Native/Gdip.cs        GDI+ flat API + bellek içi JPEG kodlayıcı (SHCreate
 src/Ui/OverlayWindow.cs   HUD durum makinesi: Hidden/Listening/Thinking/Streaming/Done/Error/Info, daktilo, solma
 src/Ui/TextRenderer.cs    Kelime kaydırma + mini markdown
 src/Ui/TrayIcon.cs        Shell_NotifyIcon + sağ tık menüsü
+src/Ui/HistoryPanel.cs    (v0.3) Önceki sorular paneli: tıklanabilir, odak alan ayrı katmanlı pencere
+src/Ai/LiveTranscriber.cs (v0.3) Gemini Live WebSocket ile konuşurken canlı yazı
 ```
 
 ## 6. İş parçacığı kuralları (kırma!)
@@ -111,6 +113,11 @@ src/Ui/TrayIcon.cs        Shell_NotifyIcon + sağ tık menüsü
 - **Kanca geri çağrısı** mikro saniyeler içinde dönmeli. İçinde ağ, disk ya da kilit bekleme olmamalı. `ShouldHandle` yalnızca önbellekli işlem adı kontrolü yapar.
 - **Companion**: `_session` sayacı her basışta artar. Eski oturumun geri çağrıları `id != _session` kontrolüyle düşürülür. Yeni basış `_cts`'yi iptal eder.
 - **GameMemoryStore** kendi kilidiyle iş parçacığı güvenlidir.
+- **HistoryPanel** da UI iş parçacığında yaşar; dışarıdan `overlay.Invoke(_ => panel.X())` ile çağır. `IsOpen` her yerden okunabilir.
+  Panel HUD kuralının bilinçli istisnasıdır: kullanıcı açınca odağı alır, kapanınca `SetForegroundWindow(oyun)`.
+- **LiveTranscriber**: `Push` mikrofon iş parçacığından gelir (bloklamaz, kanal). Bağlantı `MinHoldMs` sonra kurulur (dokunuşlarda bağlanmaz).
+  Protokol (doğrulandı): `setup{model}` → `setupComplete`; `realtimeInput.audio{mimeType:"audio/pcm;rate=16000"}`;
+  sunucu `serverContent.interimInputTranscription.text` (birikimli) ve bitişte `inputTranscription.text` + `generationComplete`.
 
 ## 7. Derleme ve çalıştırma
 

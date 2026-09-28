@@ -68,6 +68,9 @@ internal sealed class Settings
     /// <summary>low | medium | high | "" (gönderme). Gecikme için low önerilir.</summary>
     public string ThinkingLevel { get; set; } = "low";
     public bool UseWebSearch { get; set; } = true;
+    /// <summary>Konuşurken söylenenler kutuda canlı yazı olarak görünür (Gemini Live API).</summary>
+    public bool LiveTranscription { get; set; } = true;
+    public string LiveTranscriptionModel { get; set; } = "gemini-3.5-transcribe-live";
     public int MaxOutputTokens { get; set; } = 4096;
     public int RequestTimeoutSeconds { get; set; } = 45;
 
@@ -144,7 +147,8 @@ internal sealed class Settings
         loaded.Memory ??= new MemorySettings();
         // Yeni sürümde eklenen ayarlar dosyada görünsün
         if (!text.Contains("\"Memory\"", StringComparison.OrdinalIgnoreCase) ||
-            !text.Contains("\"FallbackModel\"", StringComparison.OrdinalIgnoreCase))
+            !text.Contains("\"FallbackModel\"", StringComparison.OrdinalIgnoreCase) ||
+            !text.Contains("\"LiveTranscription\"", StringComparison.OrdinalIgnoreCase))
         {
             try { loaded.Save(); } catch { }
         }

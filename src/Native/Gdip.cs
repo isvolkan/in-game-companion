@@ -61,6 +61,8 @@ internal static class Gdip
     [DllImport(Dll)] public static extern int GdipCreateSolidFill(uint argb, out IntPtr brush);
     [DllImport(Dll)] public static extern int GdipDeleteBrush(IntPtr brush);
     [DllImport(Dll)] public static extern int GdipFillRectangle(IntPtr g, IntPtr brush, float x, float y, float w, float h);
+    [DllImport(Dll)] public static extern int GdipSetClipRect(IntPtr g, float x, float y, float w, float h, int combineMode);
+    [DllImport(Dll)] public static extern int GdipResetClip(IntPtr g);
     [DllImport(Dll)] public static extern int GdipFillEllipse(IntPtr g, IntPtr brush, float x, float y, float w, float h);
 
     [DllImport(Dll)] public static extern int GdipCreatePath(int fillMode, out IntPtr path);

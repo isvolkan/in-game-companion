@@ -1,4 +1,4 @@
-# Oyun Asistanı (In-Game AI Companion) — v0.2.2
+# Oyun Asistanı (In-Game AI Companion) — v0.3.0
 
 Oyunu durdurmadan sesli soru sor, cevap sağ üst köşede şeffaf bir kutuda aksın.
 İlk hedef oyun: **Crimson Desert**. The Witcher 3, BG3, Elden Ring ve Cyberpunk için de ayar hazır.
@@ -17,6 +17,8 @@ Oyunu durdurmadan sesli soru sor, cevap sağ üst köşede şeffaf bir kutuda ak
 |---|---|
 | **Mouse 5**'i basılı tut → konuş → bırak | Ekran + ses gönderilir, cevap akar |
 | Mouse 5'e **kısa dokun** (<0,35 sn) | Kutuyu kapatır, süren isteği iptal eder |
+| Mouse 5'e **çift dokun** | Önceki sorular paneli açılır: tıkla → cevabı aç/kapat, tekerlek → kaydır. Esc, Mouse 5 ya da dışarı tıklama kapatır |
+| Konuşurken | Söylediklerin kutuda canlı yazı olarak görünür (`LiveTranscription`) |
 | Cevap akarken yeniden basılı tut | Eski istek iptal olur, yeni soru başlar |
 | Devam sorusu ("peki o nerede?") | Son 4 soru-cevap 20 dakika bağlam olarak gönderilir |
 | "Bunu **hatırla**: demirci kuzey kapıda" | Not o oyunun hafızasına kaydedilir; kutuda "Hafızaya not eklendi" görünür |

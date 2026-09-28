@@ -31,6 +31,9 @@ internal sealed class MicRecorder
 
     public MicRecorder(int device) => _device = device;
 
+    /// <summary>Her dolan tampon için mikrofon iş parçacığından çağrılır (canlı yazı için). Hızlı dönmeli.</summary>
+    public Action<byte[]>? ChunkReady { get; set; }
+
     /// <summary>Kaydı başlatır; aygıt açılana kadar (tipik ~10-40 ms) bekler.</summary>
     public void Start()
     {
@@ -141,6 +144,7 @@ internal sealed class MicRecorder
                 var tmp = new byte[hdr.dwBytesRecorded];
                 Marshal.Copy(hdr.lpData, tmp, 0, tmp.Length);
                 _pcm.Write(tmp, 0, tmp.Length);
+                try { ChunkReady?.Invoke(tmp); } catch { }
             }
             // DONE bayrağını temizle ki aynı tampon iki kez okunmasın
             hdr.dwFlags &= ~Win32.WHDR_DONE;

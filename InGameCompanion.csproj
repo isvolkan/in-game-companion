@@ -20,7 +20,7 @@
     <TieredPGO>true</TieredPGO>
     <!-- Yalnızca Windows'ta çalışır; platform uyarılarını kapat -->
     <NoWarn>$(NoWarn);CA1416;SYSLIB1054</NoWarn>
-    <Version>0.2.2</Version>
+    <Version>0.3.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

@@ -37,6 +37,7 @@ internal sealed class OverlayWindow : IDisposable
     private Mode _mode = Mode.Hidden;
     private string _header = "";
     private string _question = "";
+    private bool _questionFromModel;
     private readonly StringBuilder _answer = new();
     private double _revealed;               // gösterilen karakter sayısı (kesirli, daktilo için)
     private bool _streamDone;
@@ -154,6 +155,15 @@ internal sealed class OverlayWindow : IDisposable
     public void SetQuestion(string q)
     {
         _question = q;
+        _questionFromModel = true;
+        _dirty = true;
+    }
+
+    /// <summary>Konuşurken canlı yazı. Modelin "S:" satırı geldiyse onu ezmez.</summary>
+    public void SetLiveText(string text)
+    {
+        if (_mode is not (Mode.Listening or Mode.Thinking) || _questionFromModel) return;
+        _question = text;
         _dirty = true;
     }
 
@@ -212,6 +222,7 @@ internal sealed class OverlayWindow : IDisposable
     private void Reset(Mode mode, IntPtr monitor)
     {
         _question = "";
+        _questionFromModel = false;
         _answer.Clear();
         _revealed = 0;
         _streamDone = false;
@@ -410,6 +421,11 @@ internal sealed class OverlayWindow : IDisposable
                 dot = (x0, y + (f.SmallLine - dotSize) / 2, Argb((byte)(120 + 135 * pulse), 0xFF4D4D));
                 _ops.Add(new TextRenderer.Op { Text = _header, X = x0 + dotSize + 7 * s, Y = y, Font = f.SmallBold, Color = Muted, LineHeight = f.SmallLine });
                 y += f.SmallLine;
+                if (!string.IsNullOrEmpty(_question))
+                {
+                    y += 4 * s;
+                    _text.LayoutPlain(_question, f.Body, f.BodyLine, White, x0, contentW, ref y, _ops);
+                }
                 break;
             }
             case Mode.Thinking:

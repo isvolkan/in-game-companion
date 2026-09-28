@@ -47,6 +47,18 @@ internal static class Win32
     public const uint WM_LBUTTONDBLCLK = 0x0203;
     public const uint WM_CONTEXTMENU = 0x007B;
     public const uint WM_APP = 0x8000;
+    public const uint WM_ACTIVATE = 0x0006;
+    public const uint WM_SETCURSOR = 0x0020;
+    public const uint WM_KEYDOWN = 0x0100;
+    public const uint WM_MOUSEMOVE = 0x0200;
+    public const uint WM_LBUTTONDOWN = 0x0201;
+    public const uint WM_MOUSEWHEEL = 0x020A;
+    public const uint WM_MOUSELEAVE = 0x02A3;
+    public const int WA_INACTIVE = 0;
+    public const int VK_ESCAPE = 0x1B, VK_PRIOR = 0x21, VK_NEXT = 0x22, VK_UP = 0x26, VK_DOWN = 0x28, VK_MENU = 0x12;
+    public const int IDC_ARROW = 32512, IDC_HAND = 32649;
+    public const uint KEYEVENTF_KEYUP = 0x0002;
+    public const uint TME_LEAVE = 0x00000002;
     public const uint WM_NULL = 0x0000;
 
     public const int MA_NOACTIVATE = 3;
@@ -84,6 +96,7 @@ internal static class Win32
 
     public const int SW_HIDE = 0;
     public const int SW_SHOWNOACTIVATE = 4;
+    public const int SW_SHOW = 5;
 
     public static readonly IntPtr HWND_TOPMOST = new(-1);
     public const uint SWP_NOSIZE = 0x0001;
@@ -126,7 +139,34 @@ internal static class Win32
         public IntPtr hIconSm;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct TRACKMOUSEEVENT
+    {
+        public uint cbSize;
+        public uint dwFlags;
+        public IntPtr hwndTrack;
+        public uint dwHoverTime;
+    }
+
     // ---------- user32 ----------
+    [DllImport("user32.dll")]
+    public static extern IntPtr LoadCursorW(IntPtr hInstance, IntPtr cursorName);
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetCursor(IntPtr hCursor);
+    [DllImport("user32.dll")]
+    public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")]
+    public static extern bool ClipCursor(IntPtr rect);
+    [DllImport("user32.dll")]
+    public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+    [DllImport("user32.dll")]
+    public static extern bool BringWindowToTop(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetFocus(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extraInfo);
+    [DllImport("user32.dll")]
+    public static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT tme);
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr SetWindowsHookExW(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
     [DllImport("user32.dll", SetLastError = true)]
@@ -392,6 +432,11 @@ internal static class Win32
     // ---------- Yardımcılar ----------
     public static int LoWord(IntPtr v) => (int)((long)v & 0xFFFF);
     public static int HiWord(uint v) => (int)((v >> 16) & 0xFFFF);
+    /// <summary>İstemci koordinatları (lParam), işaretli.</summary>
+    public static int GetXParam(IntPtr lp) => (short)((long)lp & 0xFFFF);
+    public static int GetYParam(IntPtr lp) => (short)(((long)lp >> 16) & 0xFFFF);
+    /// <summary>WM_MOUSEWHEEL tekerlek adımı (120 = bir tık).</summary>
+    public static int WheelDelta(IntPtr wp) => (short)(((long)wp >> 16) & 0xFFFF);
 
     public static RECT GetMonitorRect(IntPtr hMonitor)
     {

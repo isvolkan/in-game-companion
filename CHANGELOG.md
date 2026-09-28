@@ -2,6 +2,14 @@
 
 Her sürüm GitHub'da `vX.Y.Z` etiketiyle (tag) işaretlenir.
 
+## v0.3.0 — 29.09.2026
+- **Canlı yazı:** Konuşurken söylenenler kutuda kelime kelime görünür. Gemini Live API
+  (`gemini-3.5-transcribe-live`, ücretsiz katmanda çalışıyor) üzerinden, WebSocket ile, ek bağımlılık yok.
+  Ayarlar: `LiveTranscription`, `LiveTranscriptionModel`. Hata olursa sessizce kapanır, asıl soru etkilenmez.
+- **Önceki sorular paneli:** Mouse 5'e çift dokununca açılır (ya da tepsi → "Önceki sorular…").
+  Tıklanabilir, tekerlekle kaydırılır; açıkken odağı alır, kapanınca odağı oyuna geri verir.
+- Hafızaya özetlemeden etkilenmeyen `History` listesi eklendi (oyun başına en fazla 300 kayıt, tam cevap).
+
 ## v0.2.2 — 29.09.2026
 - **429 düzeltmesi:** Ücretsiz katmanda Google Search grounding kotası yok. 429 gelince istek
   otomatik olarak web aramasız tekrarlanır ve arama 30 dk boyunca kapalı tutulur.
