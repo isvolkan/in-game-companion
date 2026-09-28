@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Sıfır NuGet bağımlılığı: tüm Windows API'leri (hook, ekran yakalama, mikrofon,
+    şeffaf pencere, tepsi ikonu) doğrudan P/Invoke ile çağrılıyor.
+    Bu yüzden hedef "net8.0" (WPF/WinForms paketi gerekmiyor).
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>InGameCompanion</AssemblyName>
+    <RootNamespace>InGameCompanion</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <ServerGarbageCollector>false</ServerGarbageCollector>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <TieredPGO>true</TieredPGO>
+    <!-- Yalnızca Windows'ta çalışır; platform uyarılarını kapat -->
+    <NoWarn>$(NoWarn);CA1416;SYSLIB1054</NoWarn>
+    <Version>0.2.2</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="games\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
