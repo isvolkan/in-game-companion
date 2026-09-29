@@ -28,6 +28,7 @@ internal sealed class Companion
     private readonly HistoryPanel _panel;
     private readonly MarkerOverlay _markers;
     private readonly GameProfiler _profiler;
+    private volatile string _liveText = "";                // sesli sorunun canlı yazısı (model seçimi için)
     private (GameContext game, byte[] jpeg)? _lastFrame;   // profil yeniden oluşturma için son oyun ekranı
     private readonly object _gate = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _summarizing = new();
@@ -81,6 +82,7 @@ internal sealed class Companion
         }
 
         var s = _settings();
+        _liveText = "";
         _overlay.Invoke(_ => _markers.Hide());
         int id;
         lock (_gate)
@@ -111,7 +113,9 @@ internal sealed class Companion
         {
             tr = new LiveTranscriber(key, s.LiveTranscriptionModel.Trim(), text =>
             {
-                if (Volatile.Read(ref _session) == id) _overlay.Invoke(o => o.SetLiveText(text));
+                if (Volatile.Read(ref _session) != id) return;
+                _liveText = text;
+                _overlay.Invoke(o => o.SetLiveText(text));
             }, startDelayMs: s.MinHoldMs);
             tr.Start();
         }
@@ -241,7 +245,8 @@ internal sealed class Companion
             if (s.TailRecordMs > 0) await Task.Delay(s.TailRecordMs, ct).ConfigureAwait(false);
             var audio = await rec.StopAsync().ConfigureAwait(false);
             // Son metin geri çağrıyla kutuya gelir; ana isteği bekletme
-            if (tr != null) { trFinishing = true; _ = tr.FinishAsync(); }
+            Task<string?>? trTask = null;
+            if (tr != null) { trFinishing = true; trTask = tr.FinishAsync(); }
             if (ct.IsCancellationRequested || id != Volatile.Read(ref _session)) return;
 
             if (audio == null || audio.Seconds < 0.25)
@@ -273,12 +278,26 @@ internal sealed class Companion
                 ? _memory.Recent(game.GameName, s.HistoryTurns, s.HistoryMinutes)
                 : Array.Empty<ChatTurn>();
             string? manualProgress = !string.IsNullOrWhiteSpace(game.ProgressNote) ? game.ProgressNote : s.ProgressNote;
+            // Model seçimi: soru bir yer/öğe göstermeyi gerektirmiyorsa hafif model (güçlü modelin günlük kotasını koru).
+            // Soru metni sesli sorunun canlı yazısından gelir; cümlenin sonundaki "…nerede?" kaçmasın diye gerekirse kısa süre son metni bekler.
+            bool preferLite = false;
+            if (s.SmartModelRouting)
+            {
+                var qText = _liveText;
+                if (!string.IsNullOrWhiteSpace(qText) && !QuestionRouter.NeedsPointer(qText) && trTask != null)
+                {
+                    var done = await Task.WhenAny(trTask, Task.Delay(600, ct)).ConfigureAwait(false);
+                    if (done == trTask && !string.IsNullOrWhiteSpace(trTask.Result)) qText = trTask.Result!;
+                }
+                preferLite = !string.IsNullOrWhiteSpace(qText) && !QuestionRouter.NeedsPointer(qText);
+                Log.Info($"  Model seçimi: {(preferLite ? "hafif (işaret gerektirmiyor)" : "güçlü (işaret olabilir / metin yok)")} — \"{qText}\"");
+            }
             var req = new AskRequest(
                 Prompt.BuildSystem(s, game, manualProgress,
                     memOn ? _memory.AutoProgress(game.GameName) : null,
                     memOn ? _memory.BuildPromptBlock(game.GameName) : null),
                 Prompt.BuildTurnContext(game, cap.FocusJpeg != null, cap.FocusFromCursor, DateTime.Now),
-                cap.FullJpeg, cap.FocusJpeg, audio.Wav, history);
+                cap.FullJpeg, cap.FocusJpeg, audio.Wav, history, null, preferLite);
 
             var parser = new ResponseParser();
             parser.QuestionParsed += q => { if (id == Volatile.Read(ref _session)) _overlay.Invoke(o => o.SetQuestion(q)); };
@@ -456,7 +475,9 @@ internal sealed class Companion
             // ---- B) belirsiz (büyük kutulu) hedefleri kırpıp yakından sor
             int cs = (int)Math.Clamp(W * 0.22, 240, Math.Min(W, H));
             var idx = new List<int>();
-            for (int i = 0; i < current.Count; i++)
+            // Güçlü modelin ilk kutusu zaten isabetli (ölçüm: 3-10 px); ekstra güçlü-model isteği harcama, kırpma yalnızca hafif model cevapladıysa
+            bool weakAnswer = answeredBy.Contains("lite", StringComparison.OrdinalIgnoreCase);
+            for (int i = 0; weakAnswer && i < current.Count; i++)
             {
                 double boxPx = Math.Max(current[i].W / 1000 * W, current[i].H / 1000 * H);
                 if (current[i].Uncertain || current[i].Hidden) continue;                              // doğrulanamadı: kırpmayla "düzeltmeye" çalışma
@@ -571,7 +592,7 @@ internal sealed class Companion
                     memOn ? _memory.BuildPromptBlock(game.GameName) : null,
                     typed: true),
                 Prompt.BuildTurnContext(game, false, false, DateTime.Now, text),
-                cap.FullJpeg, null, null, history, text);
+                cap.FullJpeg, null, null, history, text, s.SmartModelRouting && !QuestionRouter.NeedsPointer(text));
 
             var parser = new ResponseParser();
             parser.AnswerDelta += d => Ui(p => p.AppendPending(d));

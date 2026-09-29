@@ -22,7 +22,8 @@ internal sealed record AskRequest(
     byte[]? FocusJpeg,
     byte[]? Wav,
     IReadOnlyList<ChatTurn> History,
-    string? TypedQuestion = null);
+    string? TypedQuestion = null,
+    bool PreferLite = false);
 
 internal sealed record AskResult(
     string Text,
@@ -123,7 +124,8 @@ internal sealed class GeminiClient
     }
 
     /// <summary>Denenecek modeller sırayla: Model, ModelChain…, FallbackModel (yinelenenler ve boşlar atılır).</summary>
-    internal static List<string> BuildChain(Settings s)
+    /// <param name="preferLite">true: hafif modeller öne alınır (güçlü modelin günlük kotasını harcama), güçlüler yedek olur.</param>
+    internal static List<string> BuildChain(Settings s, bool preferLite = false)
     {
         var list = new List<string>();
         void Add(string? m)
@@ -134,6 +136,8 @@ internal sealed class GeminiClient
         Add(s.Model);
         if (s.ModelChain != null) foreach (var m in s.ModelChain) Add(m);
         Add(s.FallbackModel);
+        if (preferLite)
+            list = list.Where(IsLite).Concat(list.Where(m => !IsLite(m))).ToList();
         return list;
     }
 
@@ -167,7 +171,7 @@ internal sealed class GeminiClient
         }
 
         var s = _settings();
-        var chain = BuildChain(s);
+        var chain = BuildChain(s, r.PreferLite && s.SmartModelRouting);
         if (chain.Count == 0) chain.Add(s.Model);
         int idx = 0;
         while (idx < chain.Count - 1 && IsBlocked(chain[idx])) idx++;

@@ -2,6 +2,13 @@
 
 Her sürüm GitHub'da `vX.Y.Z` etiketiyle (tag) işaretlenir.
 
+## v0.8.2 — 29.09.2026
+- **Akıllı model seçimi (kota tasarrufu):** Ücretsiz katmanda güçlü modellerin günlük kotası çok az (model başına ~20). Artık yalnızca yer/öğe göstermeyi gerektiren sorular
+  güçlü modelle, düz bilgi soruları hafif modelle cevaplanır (`SmartModelRouting`; Ayarlar'da "Akıllı model seçimi"). Sesli sorularda karar canlı yazıdan verilir,
+  metin yoksa güçlü model kullanılır. Yazılı sorularda metin doğrudan kullanılır.
+- Güçlü modelle cevaplanan işaretler için kırpma ince ayarı (ek güçlü-model isteği) yalnızca hafif model cevapladıysa çalışır: güçlü modelin ilk kutusu zaten 3–10 px isabetli.
+- `QuestionRouter` (saf sınıf, test edildi: 20 örnek cümle).
+
 ## v0.8.1 — 29.09.2026
 - **Hafif modelde daha isabetli işaret:** Güçlü modelin kotası bittiğinde adı ekranda yazan hedefler (ör. harita tabelaları, menü sekmeleri) artık hafif modelle
   **odaklı bir tam-kare sorguyla yeniden konumlandırılıyor** (halka yine "≈ tahmini" kalır). Kullanıcının telefon fotoğraflarıyla ölçüm: ilk tahmin ortalama 44–75 px,

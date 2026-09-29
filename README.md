@@ -1,4 +1,4 @@
-# Oyun Asistanı (In-Game AI Companion) — v0.8.1
+# Oyun Asistanı (In-Game AI Companion) — v0.8.2
 
 Oyunu durdurmadan sesli soru sor, cevap sağ üst köşede şeffaf bir kutuda aksın.
 İlk hedef oyun: **Crimson Desert**. The Witcher 3, BG3, Elden Ring ve Cyberpunk için de ayar hazır.
@@ -154,6 +154,10 @@ Her sorgu `logs\companion-YYYYMMDD.log` dosyasına yazılır: yakalama süresi, 
 
 Ücretsiz Gemini anahtarında kota **model başına ve günlüktür**: `gemini-3.8-flash` için günde yalnızca **20 istek**
 (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`), üstelik sık "yoğun talep" (503) verir. Her soru 1 istek, işaret doğrulama +1 istektir.
+
+Kotayı israf etmemek için **akıllı model seçimi** (`SmartModelRouting`, varsayılan açık) vardır: yalnızca ekranda bir yer/öğe göstermeyi gerektiren sorular
+("nerede", "göster", "işaretle", "hangi düğme"…) güçlü modelle, düz bilgi soruları ("bu malzeme ne işe yarar") hafif modelle cevaplanır; sesli soruda karar canlı yazıdan verilir.
+Güçlü modelle cevaplanan işaretler için ek güçlü-model isteği harcanmaz. Böylece aynı günlük kotayla kabaca 3–5 kat fazla işaretli soru sorulabilir.
 
 Bu yüzden uygulama bir **model zinciri** kullanır: `Model` → `ModelChain` (varsayılan: `gemini-3.5-flash`, `gemini-3-flash-preview`,
 `gemini-3.7-flash`, `gemini-3.6-flash`) → `FallbackModel` (`gemini-3.5-flash-lite`). Kotası biten model, günlük sıfırlanmaya kadar (Pasifik saatiyle

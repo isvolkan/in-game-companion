@@ -102,6 +102,11 @@ internal sealed class Settings
     /// Yeni/profili olmayan bir oyun algılanınca oyunu tanıyıp spoilersiz bir profil (games/*.md) kendiliğinden oluşturur (+1 istek, oyun başına bir kez).
     /// </summary>
     public bool AutoGameProfile { get; set; } = true;
+    /// <summary>
+    /// Ücretsiz katmanda güçlü modellerin günlük kotası çok az. Açıkken yalnızca ekranda bir yer/öğe göstermeyi gerektiren sorular
+    /// güçlü modelle, düz bilgi soruları hafif modelle cevaplanır (kota uzun yeter).
+    /// </summary>
+    public bool SmartModelRouting { get; set; } = true;
     public int RequestTimeoutSeconds { get; set; } = 45;
 
     /// <summary>XButton2 (Mouse 5) | XButton1 (Mouse 4) | Middle</summary>
@@ -182,7 +187,8 @@ internal sealed class Settings
             !text.Contains("\"AnswerLength\"", StringComparison.OrdinalIgnoreCase) ||
             !text.Contains("\"PointerRefine\"", StringComparison.OrdinalIgnoreCase) ||
             !text.Contains("\"ModelChain\"", StringComparison.OrdinalIgnoreCase) ||
-            !text.Contains("\"AutoGameProfile\"", StringComparison.OrdinalIgnoreCase))
+            !text.Contains("\"AutoGameProfile\"", StringComparison.OrdinalIgnoreCase) ||
+            !text.Contains("\"SmartModelRouting\"", StringComparison.OrdinalIgnoreCase))
         {
             try { loaded.Save(); } catch { }
         }
