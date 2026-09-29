@@ -2,6 +2,14 @@
 
 Her sürüm GitHub'da `vX.Y.Z` etiketiyle (tag) işaretlenir.
 
+## v0.8.0 — 29.09.2026
+- **Sohbet yönetimi:** Oyun başına birden çok sohbet. Panelde **Sohbetler** (liste, aç, sil, tümünü sil), **＋ Yeni** (temiz bağlam), **Oyunlar** (oyun değiştirici,
+  başka oyunun sohbetleri salt okunur) ve mesaj başına **✕ sil**. Silmeler satır içi "Emin misin?" onayıyla (oyunda odağı kaybettirmez).
+- Modele giden bağlam artık **etkin sohbetten** (eskiden oyunun tüm son soruları). Silinen sohbet/mesaj modelin özetlenmemiş bağlamından da çıkar; ilerleme notları ve özet kalır.
+- Her mesajda **cevabı veren modelin adı** görünür (`MemoryExchange.Model`).
+- Eski tek geçmiş (`History`) ilk açılışta "Önceki sorular" sohbetine taşınır (gerçek veriyle denendi: 44 mesaj korundu).
+- Panel: başlık düğmeleri görünüme göre değişir; `HistoryPanel.TestMode` (otomatik testlerde odak/imleç taşınmaz).
+
 ## v0.7.0 — 29.09.2026
 - **Otomatik oyun profili:** Tüm oyunlar oyunu "bilir". Profili olmayan bir oyun sorulunca arka planda (sormadan, oyun başına +1 istek) oyun tanınır,
   tam adı bulunur ve spoilersiz bir profil `games/<Oyun>.md` olarak yazılır; `Games` tablosuna eklenir. Profil sonraki her soruda sistem talimatına girer.

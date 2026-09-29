@@ -109,6 +109,10 @@ src/Ai/LiveTranscriber.cs (v0.3) Gemini Live WebSocket ile konuşurken canlı ya
 src/Ui/MarkerOverlay.cs   (v0.4) "Şuna bas" işaretleri: tıklamayı geçiren küçük katmanlı pencere, nabız halkası + etiket
 ```
 
+v0.8 notları: `GameMemoryData.Chats` (ChatSession: Id, Title, Messages) + `ActiveChatId`; eski `History` yüklemede bir sohbete taşınıp boşaltılır. `AddExchange(..., model)` etkin sohbete yazar,
+`Recent()` etkin sohbetten okur. `HistoryPanel` dört görünümlü (Chat/Chats/Games/Settings); `Open(liveGame, monitor, returnTo)`; `CanAsk` = görüntülenen oyun == canlı oyun.
+Silme onayı satır içi (`Confirmed(key)`, 4 sn): panelde sistem MessageBox'ı KULLANMA (odak kaybı paneli kapatır). Testler: `HistoryPanel.TestMode = true`, panele monitörü AÇIKÇA ver (sağ monitör), sahte pencereyi NOACTIVATE aç.
+
 v0.7 notları: `Core/GameProfiler.cs` — `Ensure(game, frameJpeg)` her cevaptan sonra çağrılır (profilsiz oyun + `AutoGameProfile` + kara liste/`ignored.json` + 30 dk deneme arası);
 `GeminiClient.GenerateProfileAsync` çıktısı "OYUN: <ad|YOK>" + metin (JSON değil, ayrıştırması sağlam). Yazım: `games/<Slug>.md` başlığı `<!-- otomatik-profil -->`; elle yazılan dosya ezilmeden önce `.bak`.
 `GameMemoryStore.Rename` eski tahmini adı yeni ada taşır. Testler için GİRDİ SİMÜLE ETME: kullanıcı oynuyor olabilir; izole harness (scratchpad/pt3) kullan.

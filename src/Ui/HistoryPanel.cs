@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Linq;
 using System.Runtime.InteropServices;
 using InGameCompanion.Core;
 using InGameCompanion.Native;
@@ -9,10 +10,13 @@ using InGameCompanion.Native;
 namespace InGameCompanion.Ui;
 
 /// <summary>
-/// Sohbet + ayarlar paneli. HUD'ın aksine tıklanabilir: açılınca odağı alır (oyun imleci bırakır).
-/// Sohbet: mesajlar yukarıdan aşağı akar (en yeni altta), altındaki kutuya yazıp Enter ile soru sorulur,
-/// tıklamayla eski cevaplar açılır/kapanır. Ayarlar: sağ üstteki düğmeyle açılır; satıra tıklayınca değer değişir
-/// ve anında settings.json'a kaydedilir. Esc, Mouse 5 ya da dışarı tıklama kapatır; odak oyuna geri verilir.
+/// Sohbet + sohbet yönetimi + ayarlar paneli. HUD'ın aksine tıklanabilir: açılınca odağı alır (oyun imleci bırakır).
+///  - Sohbet: mesajlar yukarıdan aşağı akar (en yeni altta); altındaki kutuya yazıp Enter ile soru sorulur; eski cevaplar
+///    tıklanınca açılır/kapanır; bir mesajın üzerine gelince ✕ ile silinir.
+///  - Sohbetler: oyunun tüm sohbetleri; yeni sohbet aç, sohbeti aç/sil, hepsini sil.
+///  - Oyunlar: hafızası olan oyunlar arasında geçiş (başka oyunun sohbetleri salt okunur).
+///  - Ayarlar: satıra tıklayınca değer değişir ve anında settings.json'a kaydedilir.
+/// Esc, Mouse 5 ya da dışarı tıklama kapatır; odak oyuna geri verilir.
 /// Tüm üyeler UI (ana) iş parçacığında çalışır; dışarıdan <see cref="OverlayWindow.Invoke"/> ile çağır.
 /// </summary>
 internal sealed class HistoryPanel : IDisposable
@@ -22,7 +26,10 @@ internal sealed class HistoryPanel : IDisposable
     private const int CaretTimerId = 7;
     private const int ExpandedByDefault = 3;
 
-    private enum View { Chat, Settings }
+    private enum View { Chat, Chats, Games, Settings }
+
+    /// <summary>Otomatik testler için: pencere odak almaz, fare imleci taşınmaz (oynayan kullanıcıyı rahatsız etmesin).</summary>
+    internal static bool TestMode { get; set; }
 
     private static Win32.WndProc? _wndProc; // GC koruması
     private static HistoryPanel? _instance;
@@ -37,15 +44,22 @@ internal sealed class HistoryPanel : IDisposable
     // Durum
     private volatile bool _open;
     private View _view = View.Chat;
-    private string _game = "";
+    private string _game = "";                 // görüntülenen oyun
+    private string _liveGame = "";             // soruların gittiği (ön plandaki) oyun
+    private string _chatId = "";               // görüntülenen sohbet
     private List<MemoryExchange> _items = new();          // kronolojik: en eski başta, en yeni sonda
     private readonly HashSet<int> _expanded = new();
     private float _scroll;
     private bool _stick = true;                            // sohbet altta kalsın (kullanıcı yukarı kaydırınca kapanır)
     private int _hover = -1;
-    private bool _hoverClose, _hoverMode;
+    private int _hoverBtn = -1;
+    private bool _hoverClose;
     private bool _tracking;
     private IntPtr _returnTo;
+    private IReadOnlyList<ChatInfo> _chatInfos = Array.Empty<ChatInfo>();
+    private IReadOnlyList<GameInfo> _gameInfos = Array.Empty<GameInfo>();
+    private string _confirmKey = "";                       // satır içi silme onayı: "chat:<id>", "all", "msg:<id>"
+    private DateTime _confirmUntil;
 
     // Yazı kutusu
     private string _input = "";
@@ -65,6 +79,8 @@ internal sealed class HistoryPanel : IDisposable
     private string _status = "";
     private DateTime _statusUntil;
 
+    /// <summary>Sohbetlerin saklandığı hafıza deposu.</summary>
+    public GameMemoryStore? Memory { get; set; }
     /// <summary>Enter ile gönderilen soru (UI iş parçacığında çağrılır).</summary>
     public Action<string>? Submitted { get; set; }
     /// <summary>Bir ayar değişip kaydedildi (kısayol tuşu gibi şeyler için kanca yeniden kurulabilir).</summary>
@@ -75,10 +91,13 @@ internal sealed class HistoryPanel : IDisposable
 
     // Yerleşim (son çizimden)
     private readonly List<(float top, float bottom)> _itemRects = new();
+    private readonly List<Action?> _rowClicks = new();
+    private readonly List<(float x, float y, float w, float h, int row, Action act)> _pillHits = new();
     private readonly List<(float top, float bottom, uint color)> _backgrounds = new();
     private readonly List<(float x, float y, float w, float h, uint color)> _pills = new();
     private float _viewTop, _viewBottom, _contentH;
-    private (float x, float y, float w, float h) _closeRect, _modeRect;
+    private (float x, float y, float w, float h) _closeRect;
+    private readonly List<(string text, Action act, float x, float y, float w, float h)> _btns = new();
 
     // Yüzey
     private IntPtr _monitor;
@@ -99,6 +118,9 @@ internal sealed class HistoryPanel : IDisposable
 
     /// <summary>Herhangi bir iş parçacığından okunabilir.</summary>
     public bool IsOpen => _open;
+
+    /// <summary>Şu an görüntülenen sohbete soru yazılabilir mi (ön plandaki oyunun etkin sohbeti)?</summary>
+    private bool CanAsk => Memory != null && _game.Length > 0 && string.Equals(_game, _liveGame, StringComparison.OrdinalIgnoreCase);
 
     private void CreateWindow()
     {
@@ -166,7 +188,7 @@ internal sealed class HistoryPanel : IDisposable
                         self.Render();
                         return IntPtr.Zero;
                     case Win32.WM_SETCURSOR:
-                        Win32.SetCursor(self._hover >= 0 || self._hoverClose || self._hoverMode ? self._hand : self._arrow);
+                        Win32.SetCursor(self._hover >= 0 || self._hoverClose || self._hoverBtn >= 0 ? self._hand : self._arrow);
                         return new IntPtr(1);
                 }
             }
@@ -177,37 +199,41 @@ internal sealed class HistoryPanel : IDisposable
 
     // ------------------------------------------------------------------ Aç / kapat
 
-    /// <param name="items">Geçmiş, EN YENİ BAŞTA (GameMemoryStore.History sırası); panel bunu kronolojik gösterir.</param>
-    public void Open(string game, IReadOnlyList<MemoryExchange> items, IntPtr monitor, IntPtr returnTo, bool settingsView = false)
+    /// <param name="liveGame">Soruların gideceği (ön plandaki) oyunun adı; panel onun etkin sohbetini açar.</param>
+    public void Open(string liveGame, IntPtr monitor, IntPtr returnTo, bool settingsView = false)
     {
-        _game = game;
-        _items = new List<MemoryExchange>(items);
-        _items.Reverse();
+        _liveGame = liveGame;
+        _game = liveGame;
         _pending = false;
         _input = "";
         _caret = 0;
         _caretOn = true;
+        _hover = -1;
+        _hoverClose = false;
+        _hoverBtn = -1;
+        _status = "";
+        _confirmKey = "";
+        _returnTo = returnTo;
+        _chatId = Memory != null ? Memory.ActiveChatId(_game) : "";
+        ReloadMessages();
         _view = settingsView ? View.Settings : View.Chat;
-        _expanded.Clear();
-        for (int i = Math.Max(0, _items.Count - ExpandedByDefault); i < _items.Count; i++) _expanded.Add(i);
         _scroll = 0;
         _stick = true;
-        _hover = -1;
-        _hoverClose = _hoverMode = false;
-        _status = "";
-        _returnTo = returnTo;
         SetMonitor(monitor);
         _open = true;
         Render();
 
-        Win32.ShowWindow(_hwnd, Win32.SW_SHOW);
+        Win32.ShowWindow(_hwnd, TestMode ? Win32.SW_SHOWNOACTIVATE : Win32.SW_SHOW);
         Win32.SetTimer(_hwnd, (UIntPtr)CaretTimerId, 530, IntPtr.Zero);
-        Win32.SetWindowPos(_hwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0, Win32.SWP_NOMOVE | Win32.SWP_NOSIZE);
-        TakeFocus();
-        // Oyun imleci pencereye kilitlemiş olabilir; serbest bırak ve imleci panelin ortasına getir
-        Win32.ClipCursor(IntPtr.Zero);
-        Win32.SetCursorPos(_pos.X + _w / 2, _pos.Y + Math.Min(_h / 2, (int)(_viewTop + 60 * _scale)));
-        Log.Info($"Sohbet paneli açıldı ({_view}): {game}, {items.Count} kayıt");
+        Win32.SetWindowPos(_hwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0, Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | (TestMode ? Win32.SWP_NOACTIVATE : 0));
+        if (!TestMode)
+        {
+            TakeFocus();
+            // Oyun imleci pencereye kilitlemiş olabilir; serbest bırak ve imleci panelin ortasına getir
+            Win32.ClipCursor(IntPtr.Zero);
+            Win32.SetCursorPos(_pos.X + _w / 2, _pos.Y + Math.Min(_h / 2, (int)(_viewTop + 60 * _scale)));
+        }
+        Log.Info($"Sohbet paneli açıldı ({_view}): {_game}, {_items.Count} mesaj");
     }
 
     public void Close(bool restoreFocus)
@@ -219,6 +245,14 @@ internal sealed class HistoryPanel : IDisposable
         if (restoreFocus && _returnTo != IntPtr.Zero && Win32.IsWindow(_returnTo))
             Win32.SetForegroundWindow(_returnTo);
         _items = new List<MemoryExchange>();
+    }
+
+    /// <summary>Görüntülenen sohbetin mesajlarını depodan yeniden yükler (son 3 cevap açık gelir).</summary>
+    private void ReloadMessages()
+    {
+        _items = Memory != null && _chatId.Length > 0 ? Memory.Messages(_game, _chatId).ToList() : new List<MemoryExchange>();
+        _expanded.Clear();
+        for (int i = Math.Max(0, _items.Count - ExpandedByDefault); i < _items.Count; i++) _expanded.Add(i);
     }
 
     // ------------------------------------------------------------------ Sohbet: bekleyen soru
@@ -256,6 +290,12 @@ internal sealed class HistoryPanel : IDisposable
         if (!_open || !_pending) return;
         _pending = false;
         if (error != null && _items.Count > 0) _items[^1].A = "⚠ " + error;
+        else if (Memory != null && _chatId.Length > 0)
+        {
+            // Depoya yazılmış hâlini (kimlik, model adı) yükle; böylece son mesaj da hemen silinebilir
+            var saved = Memory.Messages(_game, _chatId);
+            if (saved.Count >= _items.Count) _items = saved.ToList();
+        }
         Render();
     }
 
@@ -289,17 +329,108 @@ internal sealed class HistoryPanel : IDisposable
         if (Win32.GetForegroundWindow() != _hwnd) Log.Warn("Sohbet paneli odak alamadı; tıklama ve tekerlek çalışmayabilir");
     }
 
+    // ------------------------------------------------------------------ Görünümler ve sohbet işlemleri
+
+    private void SwitchView(View v)
+    {
+        _view = v;
+        _scroll = 0;
+        _stick = v == View.Chat;
+        _hover = -1;
+        _hoverBtn = -1;
+        _status = "";
+        _confirmKey = "";
+        if (v == View.Chats) _chatInfos = Memory?.Chats(_game) ?? Array.Empty<ChatInfo>();
+        if (v == View.Games) _gameInfos = Memory?.GameInfos() ?? Array.Empty<GameInfo>();
+        Render();
+    }
+
+    private void OpenChat(string id)
+    {
+        _chatId = id;
+        if (CanAsk) Memory!.SetActiveChat(_game, id);     // canlı oyunda seçilen sohbet etkin olur: sonraki sorular oraya gider
+        ReloadMessages();
+        SwitchView(View.Chat);
+    }
+
+    private void NewChat()
+    {
+        if (!CanAsk) { SetStatus("Yeni sohbet yalnızca şu an oynadığın oyun için açılır."); Render(); return; }
+        _chatId = Memory!.NewChat(_game);
+        ReloadMessages();
+        SwitchView(View.Chat);
+    }
+
+    private void ViewGame(string name)
+    {
+        _game = name;
+        _chatInfos = Memory?.Chats(name) ?? Array.Empty<ChatInfo>();
+        if (CanAsk) _chatId = Memory!.ActiveChatId(name);
+        else _chatId = _chatInfos.Count > 0 ? _chatInfos[0].Id : "";
+        ReloadMessages();
+        SwitchView(View.Chats);
+    }
+
+    /// <summary>İlk tık onay ister ("Emin misin?"), aynı öğeye 4 sn içinde ikinci tık işlemi yapar.</summary>
+    private bool Confirmed(string key)
+    {
+        if (_confirmKey == key && DateTime.UtcNow < _confirmUntil) { _confirmKey = ""; return true; }
+        _confirmKey = key;
+        _confirmUntil = DateTime.UtcNow.AddSeconds(4);
+        return false;
+    }
+
+    private bool Confirming(string key) => _confirmKey == key && DateTime.UtcNow < _confirmUntil;
+
+    private void DeleteChat(string id)
+    {
+        if (Memory == null || !Confirmed("chat:" + id)) return;
+        Memory.DeleteChat(_game, id);
+        if (_chatId == id)
+        {
+            _chatId = CanAsk ? Memory.ActiveChatId(_game) : (Memory.Chats(_game).FirstOrDefault()?.Id ?? "");
+            ReloadMessages();
+        }
+        _chatInfos = Memory.Chats(_game);
+        SetStatus("Sohbet silindi");
+    }
+
+    private void DeleteAllChats()
+    {
+        if (Memory == null || !Confirmed("all")) return;
+        Memory.DeleteAllChats(_game);
+        _chatId = CanAsk ? Memory.ActiveChatId(_game) : "";
+        ReloadMessages();
+        _chatInfos = Memory.Chats(_game);
+        SetStatus("Bu oyunun tüm sohbetleri silindi");
+    }
+
+    private void DeleteMessage(int index)
+    {
+        if (Memory == null || index < 0 || index >= _items.Count) return;
+        var it = _items[index];
+        if (it.Id.Length == 0) return;                      // henüz kaydedilmemiş (bekleyen) mesaj
+        Memory.DeleteMessage(_game, _chatId, it.Id);
+        _items.RemoveAt(index);
+        var keep = _expanded.Where(i => i != index).Select(i => i > index ? i - 1 : i).ToList();
+        _expanded.Clear();
+        foreach (var i in keep) _expanded.Add(i);
+        _hover = -1;
+        _stick = false;
+        SetStatus("Mesaj silindi");
+    }
+
     // ------------------------------------------------------------------ Girdi
 
     private void OnKey(int vk)
     {
         float line = _fonts?.BodyLine ?? 20;
         float page = Math.Max(line, _viewBottom - _viewTop - line);
-        bool chat = _view == View.Chat;
+        bool chat = _view == View.Chat && CanAsk;
         switch (vk)
         {
             case Win32.VK_ESCAPE:
-                if (_view == View.Settings) { SwitchView(View.Chat); break; }
+                if (_view != View.Chat) { SwitchView(View.Chat); break; }
                 Close(restoreFocus: true);
                 break;
             case Win32.VK_LEFT when chat: _caret = Math.Max(0, _caret - 1); CaretMoved(); break;
@@ -319,16 +450,6 @@ internal sealed class HistoryPanel : IDisposable
         }
     }
 
-    private void SwitchView(View v)
-    {
-        _view = v;
-        _scroll = 0;
-        _stick = v == View.Chat;
-        _hover = -1;
-        _status = "";
-        Render();
-    }
-
     private void CaretMoved()
     {
         _caretOn = true;
@@ -337,7 +458,7 @@ internal sealed class HistoryPanel : IDisposable
 
     private void OnChar(char c)
     {
-        if (_view != View.Chat) return;
+        if (_view != View.Chat || !CanAsk) return;
         if (c == '\r') { Submit(); return; }
         if (c == '\b')
         {
@@ -353,7 +474,7 @@ internal sealed class HistoryPanel : IDisposable
         if (string.IsNullOrEmpty(text)) return;
         // Yapıştırılan çok satırlı metin tek satıra indirilir
         text = text.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ').Replace('\t', ' ');
-        text = string.Concat(System.Linq.Enumerable.Where(text, ch => !char.IsControl(ch)));
+        text = string.Concat(text.Where(ch => !char.IsControl(ch)));
         int room = MaxInput - _input.Length;
         if (room <= 0) return;
         if (text.Length > room) text = text[..room];
@@ -365,7 +486,7 @@ internal sealed class HistoryPanel : IDisposable
     private void Submit()
     {
         var q = _input.Trim();
-        if (q.Length == 0 || _pending) return;
+        if (q.Length == 0 || _pending || !CanAsk) return;
         _input = "";
         _caret = 0;
         BeginPending(q);
@@ -387,9 +508,19 @@ internal sealed class HistoryPanel : IDisposable
         Render();
     }
 
+    private int HitBtn(int x, int y)
+    {
+        for (int i = 0; i < _btns.Count; i++)
+        {
+            var b = _btns[i];
+            if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return i;
+        }
+        return -1;
+    }
+
     private void OnMouseMove(int x, int y)
     {
-        if (x >= 0 && !_tracking)
+        if (x >= 0 && !_tracking && !TestMode)   // testte gerçek imleç panelde değil: hemen "fare ayrıldı" gelip hover'ı sıfırlamasın
         {
             var tme = new Win32.TRACKMOUSEEVENT
             {
@@ -401,12 +532,12 @@ internal sealed class HistoryPanel : IDisposable
         }
         int hover = x < 0 ? -1 : HitItem(y);
         bool hoverClose = x >= 0 && In(_closeRect, x, y);
-        bool hoverMode = x >= 0 && In(_modeRect, x, y);
-        if (hover != _hover || hoverClose != _hoverClose || hoverMode != _hoverMode)
+        int hoverBtn = x < 0 ? -1 : HitBtn(x, y);
+        if (hover != _hover || hoverClose != _hoverClose || hoverBtn != _hoverBtn)
         {
             _hover = hover;
             _hoverClose = hoverClose;
-            _hoverMode = hoverMode;
+            _hoverBtn = hoverBtn;
             Render();
         }
     }
@@ -414,30 +545,26 @@ internal sealed class HistoryPanel : IDisposable
     private void OnClick(int x, int y)
     {
         if (In(_closeRect, x, y)) { Close(restoreFocus: true); return; }
-        if (In(_modeRect, x, y)) { SwitchView(_view == View.Chat ? View.Settings : View.Chat); return; }
+        int bi = HitBtn(x, y);
+        if (bi >= 0) { _btns[bi].act(); return; }
         int i = HitItem(y);
         if (i < 0) return;
 
-        if (_view == View.Settings)
+        // Satırın içindeki küçük düğmeler (Sil, ✕…) önce
+        float cx = x, cy = y - _viewTop + _scroll;
+        foreach (var p in _pillHits)
         {
-            if (i < _rows.Count)
+            if (p.row == i && cx >= p.x && cx <= p.x + p.w && cy >= p.y && cy <= p.y + p.h)
             {
-                try { _rows[i].Click(); }
-                catch (Exception ex) { Log.Error("Ayar değiştirilemedi", ex); SetStatus("Hata: " + ex.Message); }
+                try { p.act(); } catch (Exception ex) { Log.Error("Panel işlemi", ex); SetStatus("Hata: " + ex.Message); }
                 Render();
+                return;
             }
-            return;
         }
-
-        if (!_expanded.Add(i)) _expanded.Remove(i);
-        _stick = false;
-        Render();
-        // Açılan cevap görünür alanın altına taşıyorsa kaydır
-        if (_expanded.Contains(i) && i < _itemRects.Count)
+        if (i < _rowClicks.Count && _rowClicks[i] != null)
         {
-            var (top, bottom) = _itemRects[i];
-            float viewH = _viewBottom - _viewTop;
-            if (bottom - _scroll > viewH) ScrollBy(Math.Min(bottom - _scroll - viewH, top - _scroll));
+            try { _rowClicks[i]!(); } catch (Exception ex) { Log.Error("Panel işlemi", ex); SetStatus("Hata: " + ex.Message); }
+            Render();
         }
     }
 
@@ -451,6 +578,21 @@ internal sealed class HistoryPanel : IDisposable
         for (int i = 0; i < _itemRects.Count; i++)
             if (cy >= _itemRects[i].top && cy < _itemRects[i].bottom) return i;
         return -1;
+    }
+
+    /// <summary>Sohbet satırına tıklanınca: cevabı aç/kapat.</summary>
+    private void ToggleExpand(int i)
+    {
+        if (!_expanded.Add(i)) _expanded.Remove(i);
+        _stick = false;
+        Render();
+        // Açılan cevap görünür alanın altına taşıyorsa kaydır
+        if (_expanded.Contains(i) && i < _itemRects.Count)
+        {
+            var (top, bottom) = _itemRects[i];
+            float viewH = _viewBottom - _viewTop;
+            if (bottom - _scroll > viewH) ScrollBy(Math.Min(bottom - _scroll - viewH, top - _scroll));
+        }
     }
 
     // ------------------------------------------------------------------ Ayarlar
@@ -627,10 +769,33 @@ internal sealed class HistoryPanel : IDisposable
         }
     }
 
+    /// <summary>Başlık sağındaki düğmeler (sağdan sola): görünüme göre.</summary>
+    private List<(string text, Action act)> HeaderButtons() => _view switch
+    {
+        View.Chat => new() { ("Sohbetler", () => SwitchView(View.Chats)), ("Ayarlar", () => SwitchView(View.Settings)) },
+        View.Chats => new()
+        {
+            ("‹ Sohbet", () => SwitchView(View.Chat)),
+            ("Oyunlar", () => SwitchView(View.Games)),
+            ("＋ Yeni", NewChat),
+        },
+        View.Games => new() { ("‹ Sohbetler", () => SwitchView(View.Chats)) },
+        _ => new() { ("‹ Sohbet", () => SwitchView(View.Chat)) },
+    };
+
+    private static string Ellipsize(TextRenderer text, IntPtr font, string s, float maxW)
+    {
+        if (maxW <= 0) return "";
+        if (text.Measure(font, s) <= maxW) return s;
+        while (s.Length > 1 && text.Measure(font, s + "…") > maxW) s = s[..^1];
+        return s + "…";
+    }
+
     private void Render()
     {
         if (!_open || _fonts == null) return;
         if (_status.Length > 0 && DateTime.UtcNow > _statusUntil) _status = "";
+        if (_confirmKey.Length > 0 && DateTime.UtcNow > _confirmUntil) _confirmKey = "";
         var o = _settings().Overlay;
         var f = _fonts;
         float s = (float)_scale;
@@ -652,32 +817,53 @@ internal sealed class HistoryPanel : IDisposable
 
         // ---- Başlık (kaymaz)
         _ops.Clear();
+        _btns.Clear();
         float y = pad;
-        bool chat = _view == View.Chat;
-        _ops.Add(new TextRenderer.Op { Text = chat ? "Sohbet · " + _game : "Ayarlar", X = x0, Y = y, Font = f.SmallBold, Color = Muted, LineHeight = f.SmallLine });
-
         float btn = f.SmallLine + 6 * s;
         _closeRect = (W - pad - btn, y - 3 * s, btn, btn);
         if (_hoverClose) FillRoundRect(_g, 0x33FFFFFF, _closeRect.x, _closeRect.y, _closeRect.w, _closeRect.h, 4 * s);
         float xw = _text.Measure(f.SmallBold, "✕");
         _ops.Add(new TextRenderer.Op { Text = "✕", X = _closeRect.x + (btn - xw) / 2, Y = y, Font = f.SmallBold, Color = _hoverClose ? Bold : Muted, LineHeight = f.SmallLine });
 
-        string modeText = chat ? "Ayarlar" : "‹ Sohbet";
-        float mw = _text.Measure(f.SmallBold, modeText) + 20 * s;
-        _modeRect = (_closeRect.x - 8 * s - mw, y - 3 * s, mw, btn);
-        FillRoundRect(_g, _hoverMode ? 0x40FFFFFFu : 0x22FFFFFFu, _modeRect.x, _modeRect.y, _modeRect.w, _modeRect.h, btn / 2);
-        _ops.Add(new TextRenderer.Op { Text = modeText, X = _modeRect.x + 10 * s, Y = y, Font = f.SmallBold, Color = _hoverMode ? Bold : White, LineHeight = f.SmallLine });
+        float bx = _closeRect.x - 8 * s;
+        foreach (var (text, act) in HeaderButtons())
+        {
+            float bw = _text.Measure(f.SmallBold, text) + 20 * s;
+            bx -= bw;
+            int idx = _btns.Count;
+            _btns.Add((text, act, bx, y - 3 * s, bw, btn));
+            bool hov = idx == _hoverBtn;
+            FillRoundRect(_g, hov ? 0x40FFFFFFu : 0x22FFFFFFu, bx, y - 3 * s, bw, btn, btn / 2);
+            _ops.Add(new TextRenderer.Op { Text = text, X = bx + 10 * s, Y = y, Font = f.SmallBold, Color = hov ? Bold : White, LineHeight = f.SmallLine });
+            bx -= 6 * s;
+        }
+
+        string title = _view switch
+        {
+            View.Chat => "Sohbet · " + _game,
+            View.Chats => "Sohbetler · " + _game,
+            View.Games => "Oyunlar",
+            _ => "Ayarlar",
+        };
+        _ops.Add(new TextRenderer.Op { Text = Ellipsize(_text, f.SmallBold, title, bx - x0), X = x0, Y = y, Font = f.SmallBold, Color = Muted, LineHeight = f.SmallLine });
 
         y += f.SmallLine + 2 * s;
-        _text.LayoutPlain(chat ? "Aşağıya yaz + Enter: sor · Tıkla: eski cevabı aç/kapat · Esc / Mouse 5: kapat"
-                               : "Satıra tıkla: değeri değiştir · Anında kaydedilir · Esc: sohbete dön",
-            f.Small, f.SmallLine, Faint, x0, contentW - btn * 2, ref y, _ops);
+        string hint = _view switch
+        {
+            View.Chat when !CanAsk => "Salt okunur: bu oyunun sohbeti — yazmak için o oyunu oynarken aç. Tıkla: cevabı aç/kapat",
+            View.Chat => "Aşağıya yaz + Enter: sor · Tıkla: cevabı aç/kapat · Mesajın üstüne gel: ✕ sil · Esc: kapat",
+            View.Chats => "Sohbete tıkla: aç · Sil: iki kez tıkla (onay) · ＋ Yeni: temiz bir bağlam başlatır",
+            View.Games => "Bir oyuna tıkla: onun sohbetlerine bak (yazmak için o oyunu oynarken aç)",
+            _ => "Satıra tıkla: değeri değiştir · Anında kaydedilir · Esc: sohbete dön",
+        };
+        _text.LayoutPlain(hint, f.Small, f.SmallLine, Faint, x0, contentW - btn, ref y, _ops);
         y += 6 * s;
         FillRect(_g, 0x22FFFFFF, x0, y, W - x0 - pad, Math.Max(1, s));
         y += 6 * s;
         _viewTop = y;
 
-        float footerH = chat ? f.BodyLine + 12 * s : f.SmallLine + 8 * s;
+        bool showInput = _view == View.Chat && CanAsk;
+        float footerH = showInput ? f.BodyLine + 12 * s : f.SmallLine + 8 * s;
         float footerTop = H - pad - footerH;
         _viewBottom = footerTop - 10 * s;
         _text.Draw(_g, _ops, float.MaxValue);
@@ -685,16 +871,23 @@ internal sealed class HistoryPanel : IDisposable
         // ---- Kayan içerik (içerik koordinatları: 0 = görünür alanın tepesi, kaydırmadan önce)
         _ops.Clear();
         _itemRects.Clear();
+        _rowClicks.Clear();
+        _pillHits.Clear();
         _backgrounds.Clear();
         _pills.Clear();
         float cy = 0;
-        if (chat) BuildChat(f, s, x0, contentW, accent, White, Bold, Muted, Faint, ref cy);
-        else BuildSettings(f, s, x0, contentW, accent, White, Bold, Muted, Faint, ref cy);
+        switch (_view)
+        {
+            case View.Chat: BuildChat(f, s, x0, contentW, accent, White, Bold, Muted, Faint, ref cy); break;
+            case View.Chats: BuildChats(f, s, x0, contentW, accent, White, Bold, Muted, Faint, ref cy); break;
+            case View.Games: BuildGames(f, s, x0, contentW, accent, White, Bold, Muted, Faint, ref cy); break;
+            default: BuildSettings(f, s, x0, contentW, accent, White, Bold, Muted, Faint, ref cy); break;
+        }
 
         _contentH = cy;
         float viewH = _viewBottom - _viewTop;
         float maxScroll = Math.Max(0, _contentH - viewH);
-        _scroll = _stick && chat ? maxScroll : Math.Clamp(_scroll, 0, maxScroll);
+        _scroll = _stick && _view == View.Chat ? maxScroll : Math.Clamp(_scroll, 0, maxScroll);
 
         float off = _viewTop - _scroll;
         Gdip.GdipSetClipRect(_g, 0, _viewTop, W, viewH, 0);
@@ -718,10 +911,16 @@ internal sealed class HistoryPanel : IDisposable
 
         // ---- Alt bölüm
         _ops.Clear();
-        if (chat) DrawInput(f, s, x0, W, pad, footerTop, footerH, White, Faint);
+        if (showInput) DrawInput(f, s, x0, W, pad, footerTop, footerH, White, Faint);
         else if (_status.Length > 0)
             _ops.Add(new TextRenderer.Op { Text = _status, X = x0, Y = footerTop + 2 * s, Font = f.SmallBold, Color = accent, LineHeight = f.SmallLine });
         _text.Draw(_g, _ops, float.MaxValue);
+        if (showInput && _status.Length > 0)
+        {
+            _ops.Clear();
+            _ops.Add(new TextRenderer.Op { Text = _status, X = x0, Y = footerTop - f.SmallLine - 2 * s, Font = f.SmallBold, Color = accent, LineHeight = f.SmallLine });
+            _text.Draw(_g, _ops, float.MaxValue);
+        }
 
         // ---- Kaydırma çubuğu
         if (_contentH > viewH)
@@ -743,14 +942,28 @@ internal sealed class HistoryPanel : IDisposable
             Log.Warn("Panel UpdateLayeredWindow başarısız: " + Marshal.GetLastWin32Error());
     }
 
+    /// <summary>Satırın sağına küçük bir düğme (hap) ekler ve tıklama alanını kaydeder.</summary>
+    private void AddPill(int row, string text, float rightX, float rowTop, float rowH, TextRenderer.Fonts f, float s,
+                         uint color, uint textColor, Action act)
+    {
+        float pw = _text.Measure(f.SmallBold, text) + 22 * s;
+        float ph = f.SmallLine + 8 * s;
+        float px = rightX - pw, py = rowTop + (rowH - ph) / 2;
+        _pills.Add((px, py, pw, ph, color));
+        _ops.Add(new TextRenderer.Op { Text = text, X = px + 11 * s, Y = py + 4 * s, Font = f.SmallBold, Color = textColor, LineHeight = f.SmallLine });
+        _pillHits.Add((px, py, pw, ph, row, act));
+    }
+
     /// <summary>Sohbet içeriği: en eski başta, en yeni sonda.</summary>
     private void BuildChat(TextRenderer.Fonts f, float s, float x0, float contentW, uint accent,
                            uint White, uint Bold, uint Muted, uint Faint, ref float cy)
     {
         if (_items.Count == 0)
         {
-            _text.LayoutPlain("Bu oyun için henüz kayıtlı soru yok. Aşağıya yazarak ya da Mouse 5'i basılı tutup konuşarak soru sor; burada görünecek.",
-                f.Body, f.BodyLine, Muted, x0, contentW, ref cy, _ops);
+            var msg = CanAsk
+                ? "Bu sohbet boş. Aşağıya yazarak ya da Mouse 5'i basılı tutup konuşarak soru sor."
+                : "Bu oyunun bu sohbetinde mesaj yok.";
+            _text.LayoutPlain(msg, f.Body, f.BodyLine, Muted, x0, contentW, ref cy, _ops);
             return;
         }
         for (int i = 0; i < _items.Count; i++)
@@ -761,6 +974,7 @@ internal sealed class HistoryPanel : IDisposable
             float top = cy;
             cy += 7 * s;
             string when = isPending ? "şimdi" : it.At.ToString("dd.MM · HH:mm", CultureInfo.InvariantCulture);
+            if (!isPending && !string.IsNullOrEmpty(it.Model)) when += " · " + it.Model;
             _ops.Add(new TextRenderer.Op { Text = (open ? "▾ " : "▸ ") + when, X = x0, Y = cy, Font = f.Small, Color = Faint, LineHeight = f.SmallLine });
             cy += f.SmallLine;
             var q = string.IsNullOrWhiteSpace(it.Q) ? "(soru metni yok)" : it.Q;
@@ -776,9 +990,107 @@ internal sealed class HistoryPanel : IDisposable
                 _text.LayoutPlain("Düşünüyor…", f.SmallItalic, f.SmallLine, Faint, x0 + 6 * s, contentW - 6 * s, ref cy, _ops);
             }
             cy += 7 * s;
+            int row = _itemRects.Count;
             _itemRects.Add((top, cy));
+            int idx = i;
+            _rowClicks.Add(() => ToggleExpand(idx));
             if (i == _hover) _backgrounds.Add((top, cy, 0x18FFFFFF));
             else if (open) _backgrounds.Add((top, cy, 0x0CFFFFFF));
+
+            // Mesajın üstüne gelince sağ üstte ✕ (sil); kaydedilmemiş (bekleyen) mesajda yok
+            if (i == _hover && !isPending && it.Id.Length > 0 && Memory != null)
+            {
+                bool conf = Confirming("msg:" + it.Id);
+                string mid = it.Id;
+                AddPill(row, conf ? "Emin misin?" : "✕ sil", x0 + contentW, top, 34 * s, f, s,
+                        conf ? 0xCCB03A2Eu : 0x33FFFFFFu, Bold, () =>
+                        {
+                            if (Confirmed("msg:" + mid)) DeleteMessage(idx);
+                        });
+            }
+        }
+    }
+
+    /// <summary>Oyunun sohbetleri: başlık + tarih/mesaj sayısı; sağda Sil (iki tıkla).</summary>
+    private void BuildChats(TextRenderer.Fonts f, float s, float x0, float contentW, uint accent,
+                            uint White, uint Bold, uint Muted, uint Faint, ref float cy)
+    {
+        _chatInfos = Memory?.Chats(_game) ?? _chatInfos;
+        if (_chatInfos.Count == 0)
+        {
+            _text.LayoutPlain(CanAsk ? "Bu oyunda henüz sohbet yok. ＋ Yeni ile başla ya da bir soru sor." : "Bu oyunun kayıtlı sohbeti yok.",
+                f.Body, f.BodyLine, Muted, x0, contentW, ref cy, _ops);
+            return;
+        }
+        string activeId = CanAsk && Memory != null ? Memory.ActiveChatId(_game) : "";
+        for (int i = 0; i < _chatInfos.Count; i++)
+        {
+            var c = _chatInfos[i];
+            float top = cy;
+            cy += 8 * s;
+            float rowTop = cy;
+            float labelW = contentW - 96 * s;
+            bool active = c.Id == activeId;
+            _text.LayoutPlain(Ellipsize(_text, active ? f.Bold : f.Body, c.Title, labelW), active ? f.Bold : f.Body, f.BodyLine,
+                active ? Bold : White, x0, labelW, ref cy, _ops);
+            string sub = $"{c.Updated:dd.MM · HH:mm} · {c.Count} mesaj" + (active ? " · etkin" : "");
+            _text.LayoutPlain(sub, f.Small, f.SmallLine, Faint, x0, labelW, ref cy, _ops);
+            float rowH = cy - rowTop;
+            cy += 8 * s;
+            int row = _itemRects.Count;
+            _itemRects.Add((top, cy));
+            string id = c.Id;
+            _rowClicks.Add(() => OpenChat(id));
+            if (i == _hover) _backgrounds.Add((top, cy, 0x18FFFFFF));
+            else if (active) _backgrounds.Add((top, cy, 0x0CFFFFFF));
+            bool conf = Confirming("chat:" + id);
+            AddPill(row, conf ? "Emin misin?" : "Sil", x0 + contentW, rowTop, rowH, f, s,
+                    conf ? 0xCCB03A2Eu : 0x26FFFFFFu, Bold, () => DeleteChat(id));
+        }
+        // Hepsini sil
+        {
+            float top = cy;
+            cy += 8 * s;
+            float rowTop = cy;
+            _text.LayoutPlain("Bu oyunun tüm sohbetlerini sil", f.Small, f.SmallLine, Muted, x0, contentW - 100 * s, ref cy, _ops);
+            float rowH = cy - rowTop;
+            cy += 8 * s;
+            int row = _itemRects.Count;
+            _itemRects.Add((top, cy));
+            _rowClicks.Add(null);
+            bool conf = Confirming("all");
+            AddPill(row, conf ? "Emin misin?" : "Tümünü sil", x0 + contentW, rowTop, rowH, f, s,
+                    conf ? 0xCCB03A2Eu : 0x26FFFFFFu, Bold, DeleteAllChats);
+        }
+    }
+
+    /// <summary>Hafızası olan oyunlar: son kullanılan başta.</summary>
+    private void BuildGames(TextRenderer.Fonts f, float s, float x0, float contentW, uint accent,
+                            uint White, uint Bold, uint Muted, uint Faint, ref float cy)
+    {
+        _gameInfos = Memory?.GameInfos() ?? _gameInfos;
+        if (_gameInfos.Count == 0)
+        {
+            _text.LayoutPlain("Henüz kayıtlı oyun yok.", f.Body, f.BodyLine, Muted, x0, contentW, ref cy, _ops);
+            return;
+        }
+        for (int i = 0; i < _gameInfos.Count; i++)
+        {
+            var g = _gameInfos[i];
+            float top = cy;
+            cy += 8 * s;
+            bool live = string.Equals(g.Name, _liveGame, StringComparison.OrdinalIgnoreCase);
+            bool viewing = string.Equals(g.Name, _game, StringComparison.OrdinalIgnoreCase);
+            _text.LayoutPlain(Ellipsize(_text, viewing ? f.Bold : f.Body, g.Name, contentW - 90 * s), viewing ? f.Bold : f.Body, f.BodyLine,
+                viewing ? Bold : White, x0, contentW - 90 * s, ref cy, _ops);
+            _text.LayoutPlain($"{g.ChatCount} sohbet · son kullanım {g.Updated:dd.MM · HH:mm}" + (live ? " · şu an oynadığın" : ""),
+                f.Small, f.SmallLine, Faint, x0, contentW - 90 * s, ref cy, _ops);
+            cy += 8 * s;
+            _itemRects.Add((top, cy));
+            string name = g.Name;
+            _rowClicks.Add(() => ViewGame(name));
+            if (i == _hover) _backgrounds.Add((top, cy, 0x18FFFFFF));
+            else if (viewing) _backgrounds.Add((top, cy, 0x0CFFFFFF));
         }
     }
 
@@ -808,6 +1120,8 @@ internal sealed class HistoryPanel : IDisposable
             _ops.Add(new TextRenderer.Op { Text = val, X = x0 + contentW - pw + 11 * s, Y = py + 4 * s, Font = f.SmallBold, Color = Bold, LineHeight = f.SmallLine });
             cy += 8 * s;
             _itemRects.Add((top, cy));
+            var row = r;
+            _rowClicks.Add(() => row.Click());
             if (i == _hover) _backgrounds.Add((top, cy, 0x18FFFFFF));
         }
     }

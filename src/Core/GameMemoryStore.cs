@@ -18,10 +18,26 @@ internal sealed class MemoryNote
 
 internal sealed class MemoryExchange
 {
+    public string Id { get; set; } = "";
     public string Q { get; set; } = "";
     public string A { get; set; } = "";
     public DateTime At { get; set; }
+    /// <summary>Cevabı veren model (biliniyorsa).</summary>
+    public string Model { get; set; } = "";
 }
+
+/// <summary>Bir oyunun içindeki tek bir sohbet (yeni sohbet açılınca ayrı bağlam başlar).</summary>
+internal sealed class ChatSession
+{
+    public string Id { get; set; } = "";
+    public string Title { get; set; } = "Yeni sohbet";
+    public DateTime Created { get; set; } = DateTime.Now;
+    public DateTime Updated { get; set; } = DateTime.Now;
+    public List<MemoryExchange> Messages { get; set; } = new();
+}
+
+internal sealed record ChatInfo(string Id, string Title, DateTime Updated, int Count);
+internal sealed record GameInfo(string Name, int ChatCount, DateTime Updated);
 
 /// <summary>Bir oyunun kalıcı hafızası — memory/&lt;Oyun&gt;.json</summary>
 internal sealed class GameMemoryData
@@ -39,8 +55,11 @@ internal sealed class GameMemoryData
     public List<MemoryNote> Notes { get; set; } = new();
     /// <summary>Henüz özete katılmamış soru-cevaplar.</summary>
     public List<MemoryExchange> Exchanges { get; set; } = new();
-    /// <summary>Geçmiş paneli için tüm soru-cevaplar (özetlemeden etkilenmez, tam cevap).</summary>
+    /// <summary>ESKİ (v0.7 ve öncesi): tek sürekli geçmiş. Açılışta bir sohbete taşınır ve boşaltılır.</summary>
     public List<MemoryExchange> History { get; set; } = new();
+    /// <summary>Sohbetler (özetlemeden etkilenmez, tam cevaplar).</summary>
+    public List<ChatSession> Chats { get; set; } = new();
+    public string ActiveChatId { get; set; } = "";
     public int TotalQuestions { get; set; }
     public DateTime FirstSeen { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
@@ -64,7 +83,7 @@ internal sealed record MemoryUpdate(bool NoteAdded, bool NotesCleared, string? N
 /// </summary>
 internal sealed class GameMemoryStore
 {
-    private const int MaxQuests = 30, MaxRegions = 20, MaxNotes = 60, MaxExchanges = 40, MaxHistory = 300;
+    private const int MaxQuests = 30, MaxRegions = 20, MaxNotes = 60, MaxExchanges = 40, MaxChatMessages = 300, MaxChats = 60;
 
     private readonly Dictionary<string, GameMemoryData> _cache = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
@@ -119,24 +138,161 @@ internal sealed class GameMemoryStore
         }
     }
 
-    /// <summary>Geçmiş paneli için soru-cevaplar (en yeni başta, kopya).</summary>
-    public IReadOnlyList<MemoryExchange> History(string game)
+    // ------------------------------------------------------------------ Sohbetler
+
+    private static string NewId() => Guid.NewGuid().ToString("N")[..12];
+
+    /// <summary>Etkin sohbet (yoksa oluşturur).</summary>
+    private ChatSession ActiveChat(GameMemoryData m)
+    {
+        var c = m.Chats.FirstOrDefault(x => x.Id == m.ActiveChatId);
+        if (c != null) return c;
+        c = m.Chats.OrderByDescending(x => x.Updated).FirstOrDefault();
+        if (c == null)
+        {
+            c = new ChatSession { Id = NewId() };
+            m.Chats.Add(c);
+        }
+        m.ActiveChatId = c.Id;
+        return c;
+    }
+
+    public IReadOnlyList<ChatInfo> Chats(string game)
+    {
+        lock (_gate)
+            return Get(game).Chats.OrderByDescending(c => c.Updated)
+                .Select(c => new ChatInfo(c.Id, c.Title, c.Updated, c.Messages.Count)).ToList();
+    }
+
+    /// <summary>Etkin sohbetin kimliği (yoksa oluşturur).</summary>
+    public string ActiveChatId(string game)
     {
         lock (_gate)
         {
-            return Get(game).History
-                .AsEnumerable().Reverse()
-                .Select(e => new MemoryExchange { Q = e.Q, A = e.A, At = e.At })
-                .ToList();
+            var m = Get(game);
+            var before = m.ActiveChatId;
+            var c = ActiveChat(m);
+            if (before != m.ActiveChatId) Save(m);
+            return c.Id;
         }
     }
 
+    public void SetActiveChat(string game, string chatId)
+    {
+        lock (_gate)
+        {
+            var m = Get(game);
+            if (m.Chats.Any(c => c.Id == chatId) && m.ActiveChatId != chatId) { m.ActiveChatId = chatId; Save(m); }
+        }
+    }
+
+    /// <summary>Boş yeni sohbet açar ve etkin yapar. Zaten boş bir etkin sohbet varsa onu yeniden kullanır.</summary>
+    public string NewChat(string game)
+    {
+        lock (_gate)
+        {
+            var m = Get(game);
+            var empty = m.Chats.FirstOrDefault(c => c.Id == m.ActiveChatId && c.Messages.Count == 0);
+            if (empty != null) return empty.Id;
+            var c = new ChatSession { Id = NewId() };
+            m.Chats.Add(c);
+            m.ActiveChatId = c.Id;
+            TrimChats(m);
+            Save(m);
+            return c.Id;
+        }
+    }
+
+    /// <summary>Sohbetin mesajları, kronolojik (en eski başta). Kopya.</summary>
+    public IReadOnlyList<MemoryExchange> Messages(string game, string chatId)
+    {
+        lock (_gate)
+        {
+            var c = Get(game).Chats.FirstOrDefault(x => x.Id == chatId);
+            return c == null ? Array.Empty<MemoryExchange>()
+                : c.Messages.Select(e => new MemoryExchange { Id = e.Id, Q = e.Q, A = e.A, At = e.At, Model = e.Model }).ToList();
+        }
+    }
+
+    /// <summary>Tek mesajı siler. Modelin bağlamından da çıkar (özetlenmemiş kayıtlardan). Özet dokunulmaz.</summary>
+    public void DeleteMessage(string game, string chatId, string messageId)
+    {
+        lock (_gate)
+        {
+            var m = Get(game);
+            var c = m.Chats.FirstOrDefault(x => x.Id == chatId);
+            var msg = c?.Messages.FirstOrDefault(x => x.Id == messageId);
+            if (c == null || msg == null) return;
+            c.Messages.Remove(msg);
+            m.Exchanges.RemoveAll(e => e.At == msg.At);
+            Save(m);
+        }
+    }
+
+    /// <summary>Sohbeti siler (ilerleme notları ve özet kalır). Etkin sohbet silinirse en yenisi etkin olur.</summary>
+    public void DeleteChat(string game, string chatId)
+    {
+        lock (_gate)
+        {
+            var m = Get(game);
+            var c = m.Chats.FirstOrDefault(x => x.Id == chatId);
+            if (c == null) return;
+            var stamps = c.Messages.Select(e => e.At).ToHashSet();
+            m.Exchanges.RemoveAll(e => stamps.Contains(e.At));
+            m.Chats.Remove(c);
+            if (m.ActiveChatId == chatId) m.ActiveChatId = m.Chats.OrderByDescending(x => x.Updated).FirstOrDefault()?.Id ?? "";
+            Save(m);
+        }
+    }
+
+    /// <summary>Oyunun tüm sohbetlerini siler (ilerleme notları ve özet kalır).</summary>
+    public void DeleteAllChats(string game)
+    {
+        lock (_gate)
+        {
+            var m = Get(game);
+            m.Chats.Clear();
+            m.ActiveChatId = "";
+            m.Exchanges.Clear();
+            Save(m);
+        }
+    }
+
+    /// <summary>Hafızası olan oyunlar, en son kullanılan başta.</summary>
+    public IReadOnlyList<GameInfo> GameInfos()
+    {
+        var list = new List<GameInfo>();
+        foreach (var name in KnownGames())
+        {
+            lock (_gate)
+            {
+                var m = Get(name);
+                list.Add(new GameInfo(m.Game.Length > 0 ? m.Game : name, m.Chats.Count, m.UpdatedAt));
+            }
+        }
+        return list.OrderByDescending(g => g.Updated).ToList();
+    }
+
+    private static void TrimChats(GameMemoryData m)
+    {
+        while (m.Chats.Count > MaxChats)
+        {
+            var oldest = m.Chats.Where(c => c.Id != m.ActiveChatId).OrderBy(c => c.Updated).FirstOrDefault();
+            if (oldest == null) break;
+            m.Chats.Remove(oldest);
+        }
+    }
+
+    /// <summary>Modele bağlam olarak gidecek son turlar: ETKİN sohbetten, zaman penceresi içinde.</summary>
     public IReadOnlyList<ChatTurn> Recent(string game, int maxTurns, int maxMinutes)
     {
         var cutoff = DateTime.Now.AddMinutes(-maxMinutes);
         lock (_gate)
         {
-            return Get(game).Exchanges
+            var m = Get(game);
+            var chat = m.Chats.FirstOrDefault(c => c.Id == m.ActiveChatId);
+            if (chat == null) return Array.Empty<ChatTurn>();
+            return chat.Messages
                 .Where(e => e.At >= cutoff)
                 .TakeLast(Math.Max(0, maxTurns))
                 .Select(e => new ChatTurn(e.Q, e.A))
@@ -195,7 +351,7 @@ internal sealed class GameMemoryStore
     }
 
     /// <summary>Soru-cevabı kaydeder. Özetleme gerekiyorsa true döner.</summary>
-    public bool AddExchange(string game, string question, string answer, int summarizeAfter)
+    public bool AddExchange(string game, string question, string answer, int summarizeAfter, string model = "")
     {
         if (string.IsNullOrWhiteSpace(answer)) return false;
         lock (_gate)
@@ -208,13 +364,20 @@ internal sealed class GameMemoryStore
                 At = DateTime.Now,
             });
             if (m.Exchanges.Count > MaxExchanges) m.Exchanges.RemoveAt(0);
-            m.History.Add(new MemoryExchange
+            var chat = ActiveChat(m);
+            chat.Messages.Add(new MemoryExchange
             {
+                Id = NewId(),
                 Q = question.Trim(),
                 A = answer.Length > 4000 ? answer[..4000] + "…" : answer.Trim(),
                 At = m.Exchanges[^1].At,
+                Model = model,
             });
-            if (m.History.Count > MaxHistory) m.History.RemoveAt(0);
+            if (chat.Messages.Count > MaxChatMessages) chat.Messages.RemoveAt(0);
+            chat.Updated = DateTime.Now;
+            if (chat.Title == "Yeni sohbet" && chat.Messages.Count == 1)
+                chat.Title = question.Trim().Length > 48 ? question.Trim()[..48] + "…" : question.Trim();
+            TrimChats(m);
             m.TotalQuestions++;
             Save(m);
             return summarizeAfter > 0 && m.Exchanges.Count >= summarizeAfter;
@@ -324,9 +487,29 @@ internal sealed class GameMemoryStore
             if (m == null) return null;
             m.Quests ??= new(); m.Regions ??= new(); m.Notes ??= new(); m.Exchanges ??= new();
             m.History ??= new();
+            m.Chats ??= new();
             // v0.2 dosyaları: geçmiş henüz yoksa özetlenmemiş kayıtlardan başlat
-            if (m.History.Count == 0 && m.Exchanges.Count > 0)
+            if (m.History.Count == 0 && m.Chats.Count == 0 && m.Exchanges.Count > 0)
                 m.History.AddRange(m.Exchanges.Select(e => new MemoryExchange { Q = e.Q, A = e.A, At = e.At }));
+            // v0.7 ve öncesi: tek sürekli geçmişi tek bir sohbete taşı
+            if (m.History.Count > 0)
+            {
+                m.Chats.Add(new ChatSession
+                {
+                    Id = NewId(),
+                    Title = "Önceki sorular",
+                    Created = m.History[0].At,
+                    Updated = m.History[^1].At,
+                    Messages = m.History.ToList(),
+                });
+                m.ActiveChatId = m.Chats[^1].Id;
+                m.History.Clear();
+            }
+            foreach (var c in m.Chats)
+            {
+                c.Messages ??= new();
+                foreach (var e in c.Messages) if (string.IsNullOrEmpty(e.Id)) e.Id = NewId();
+            }
             m.Summary ??= "";
             return m;
         }

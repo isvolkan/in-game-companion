@@ -1,4 +1,4 @@
-# Oyun Asistanı (In-Game AI Companion) — v0.7.0
+# Oyun Asistanı (In-Game AI Companion) — v0.8.0
 
 Oyunu durdurmadan sesli soru sor, cevap sağ üst köşede şeffaf bir kutuda aksın.
 İlk hedef oyun: **Crimson Desert**. The Witcher 3, BG3, Elden Ring ve Cyberpunk için de ayar hazır.
@@ -17,7 +17,7 @@ Oyunu durdurmadan sesli soru sor, cevap sağ üst köşede şeffaf bir kutuda ak
 |---|---|
 | **Mouse 5**'i basılı tut → konuş → bırak | Ekran + ses gönderilir, cevap akar |
 | Mouse 5'e **kısa dokun** (<0,35 sn) | Kutuyu kapatır, süren isteği iptal eder |
-| Mouse 5'e **çift dokun** (ya da tepsi → **Sohbet…**) | Sohbet paneli açılır. Mesajlar yukarıdan aşağı akar, en yeni altta; altındaki kutuya **yazıp Enter'a basarak** soru sorabilirsin. Eski cevaplara tıkla → aç/kapat, tekerlek → kaydır. Esc, Mouse 5 ya da dışarı tıklama kapatır |
+| Mouse 5'e **çift dokun** (ya da tepsi → **Sohbet…**) | Sohbet paneli açılır. Mesajlar yukarıdan aşağı akar, en yeni altta; altındaki kutuya **yazıp Enter'a basarak** soru sorabilirsin. Eski cevaplara tıkla → aç/kapat, tekerlek → kaydır. **Sohbetler / ＋ Yeni / Oyunlar** ile sohbetleri yönet, mesajı silebilirsin (aşağıya bak). Esc, Mouse 5 ya da dışarı tıklama kapatır |
 | Panelde sağ üstteki **Ayarlar** düğmesi (ya da tepsi → **Ayarlar…**) | Uygulama içi ayar ekranı: model, cevap uzunluğu, işaret, canlı yazı, kısayol tuşu, API anahtarı… Satıra tıkla → değer değişir ve anında kaydedilir |
 | "Haritayı nerede açarım?", "önce envantere, sonra haritaya bas" | Model hedefi ekranda görürse üstüne **nabız gibi atan halka + etiket** çizer (çok adımlıysa numaralı). Mouse 5'e dokunmak ya da yeni soru kapatır |
 | Konuşurken | Söylediklerin kutuda canlı yazı olarak görünür (`LiveTranscription`) |
@@ -62,6 +62,20 @@ Sesli sorular için `AnswerLength`, yazılı sohbet için `TypedAnswerLength` ay
 
 `AnswerMaxWords` sıfırdan büyükse kelime sınırını elle belirler. Cevap HUD kutusuna sığmazsa kutunun altında
 "Tamamı için Mouse 5'e çift dokun" yazar; tam metin sohbet panelindeki geçmişte durur. Kısa dışı modlarda kutu daha uzun (en çok 60 sn) kalır.
+
+## Sohbetler (oyun başına, silinebilir)
+
+Her oyunun kendi sohbetleri vardır ve sohbet paneli (Mouse 5 çift dokun) ön plandaki oyunun **etkin sohbetini** açar. Başlıktaki düğmelerle:
+
+| Düğme | Ne yapar |
+|---|---|
+| **Sohbetler** | Oyunun tüm sohbetleri (başlık ilk sorudan otomatik gelir, tarih, mesaj sayısı). Tıkla: aç ve etkin yap. **Sil**: iki kez tıkla (ilk tık "Emin misin?" sorar). **Tümünü sil**: oyunun bütün sohbetlerini siler |
+| **＋ Yeni** | Temiz bir sohbet başlatır: modele yalnızca bu sohbetin son soruları bağlam olarak gider ("peki o nerede?" başka konulara karışmaz) |
+| **Oyunlar** | Hafızası olan oyunlar arasında geçiş. Başka oyunun sohbetleri **salt okunurdur** (soru sormak için o oyunu oynarken aç) |
+| Mesajın üstüne gelince **✕ sil** | Tek bir soru-cevabı siler (yine iki tık) |
+
+Silmek yalnızca sohbeti (ve modelin o sohbetten özetlenmemiş bağlamını) siler; **oyunun ilerleme notları, görev/bölge takibi ve özet hafıza kalır**. Onları sıfırlamak için tepsi → *Son oyunun hafızasını sil…*.
+Her cevabın yanında hangi modelin cevapladığı görünür. Eski (v0.7 ve öncesi) tek geçmiş, ilk açılışta otomatik olarak "Önceki sorular" adlı bir sohbete taşınır.
 
 ## Oyun profilleri (otomatik)
 

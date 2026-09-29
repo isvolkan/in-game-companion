@@ -48,6 +48,7 @@ internal static class Program
         var detector = new GameDetector(Current);
         var gemini = new GeminiClient(Current);
         var memory = new GameMemoryStore();
+        panel.Memory = memory;
         var profiler = new GameProfiler(Current, gemini, memory, detector,
             (title, body) => overlay.Invoke(o => { if (!o.IsBusyOrVisible) o.ShowInfo(title, body, 6); }));
         var companion = new Companion(Current, overlay, panel, markers, detector, gemini, memory, profiler);

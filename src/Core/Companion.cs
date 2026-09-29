@@ -210,18 +210,11 @@ internal sealed class Companion
 
     public void OpenHistory(bool settingsView = false)
     {
-        var game = _game?.GameName;
-        var items = string.IsNullOrEmpty(game) ? Array.Empty<MemoryExchange>() : _memory.History(game);
-        foreach (var alt in new[] { LastGameName, _memory.MostRecentGame() })
-        {
-            if (items.Count > 0) break;
-            if (string.IsNullOrEmpty(alt) || alt == game) continue;
-            var altItems = _memory.History(alt);
-            if (altItems.Count == 0) continue;
-            game = alt;
-            items = altItems;
-        }
-        var name = game ?? "Bilinmeyen oyun";
+        // Soruların gideceği oyun: ön plandaki (son algılanan) oyun; yoksa son soru sorulan ya da hafızası en yeni olan
+        var name = _game?.GameName;
+        if (string.IsNullOrEmpty(name)) name = LastGameName;
+        if (string.IsNullOrEmpty(name)) name = _memory.MostRecentGame();
+        name ??= "Bilinmeyen oyun";
         var fg = Win32.GetForegroundWindow();
         // Ön plan bu uygulamanın kendi penceresiyse (tepsi menüsü vb.) son bilinen oyun penceresini hedef al
         Win32.GetWindowThreadProcessId(fg, out var fgPid);
@@ -231,7 +224,7 @@ internal sealed class Companion
         _overlay.Invoke(o =>
         {
             o.HideNow();
-            _panel.Open(name, items, monitor, fg, settingsView);
+            _panel.Open(name, monitor, fg, settingsView);
         });
     }
 
@@ -308,7 +301,7 @@ internal sealed class Companion
             else
             {
                 var sources = result.Sources.ToList();
-                MemoryUpdate? upd = memOn ? SaveExchange(game.GameName, parser, answer, parser.Question, s) : null;
+                MemoryUpdate? upd = memOn ? SaveExchange(game.GameName, parser, answer, parser.Question, s, result.Model) : null;
                 var footerText = string.Join(" · ", new[] { s.ShowModelNotice ? result.Notice : null, upd?.Footer }.Where(x => !string.IsNullOrEmpty(x)));
                 var footer = footerText.Length == 0 ? null : footerText;
                 _overlay.Invoke(o => o.Complete(sources, footer));
@@ -355,11 +348,11 @@ internal sealed class Companion
     }
 
     /// <summary>Meta satırını uygular ve soru-cevabı hafızaya yazar (özetleme gerekiyorsa başlatır).</summary>
-    private MemoryUpdate SaveExchange(string gameName, ResponseParser parser, string answer, string question, Settings s)
+    private MemoryUpdate SaveExchange(string gameName, ResponseParser parser, string answer, string question, Settings s, string model)
     {
         var upd = _memory.ApplyMeta(gameName, parser.ParseMeta());
         LastGameName = gameName;
-        if (_memory.AddExchange(gameName, question, answer, s.Memory.SummarizeAfter))
+        if (_memory.AddExchange(gameName, question, answer, s.Memory.SummarizeAfter, model))
             _ = SummarizeAsync(gameName);
         return upd;
     }
@@ -573,7 +566,7 @@ internal sealed class Companion
             }
             else
             {
-                if (memOn) SaveExchange(game.GameName, parser, answer, string.IsNullOrWhiteSpace(parser.Question) ? text : parser.Question, s);
+                if (memOn) SaveExchange(game.GameName, parser, answer, string.IsNullOrWhiteSpace(parser.Question) ? text : parser.Question, s, result.Model);
                 if (s.ShowModelNotice && result.Notice != null) Ui(p => p.AppendPending("\n\n" + result.Notice));
                 Ui(p => p.EndPending(null));
                 ShowPoints(id, ct, parser, cap, s, parser.Question, answer, result.Model); _profiler.Ensure(game, cap.FullJpeg); _lastFrame = (game, cap.FullJpeg);
