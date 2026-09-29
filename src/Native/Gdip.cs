@@ -27,6 +27,13 @@ internal static class Gdip
     public const int StringFormatFlagsNoClip = 0x4000;
 
     [StructLayout(LayoutKind.Sequential)]
+    public struct PointF
+    {
+        public float X, Y;
+        public PointF(float x, float y) { X = x; Y = y; }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     public struct RectF
     {
         public float X, Y, Width, Height;
@@ -63,6 +70,9 @@ internal static class Gdip
     [DllImport(Dll)] public static extern int GdipFillRectangle(IntPtr g, IntPtr brush, float x, float y, float w, float h);
     [DllImport(Dll)] public static extern int GdipSetClipRect(IntPtr g, float x, float y, float w, float h, int combineMode);
     [DllImport(Dll)] public static extern int GdipResetClip(IntPtr g);
+    [DllImport(Dll)] public static extern int GdipFillPolygon(IntPtr g, IntPtr brush, PointF[] points, int count, int fillMode);
+    [DllImport(Dll)] public static extern int GdipDrawPolygon(IntPtr g, IntPtr pen, PointF[] points, int count);
+    [DllImport(Dll)] public static extern int GdipSetPenLineJoin(IntPtr pen, int lineJoin);
     [DllImport(Dll)] public static extern int GdipCreatePen1(uint argb, float width, int unit, out IntPtr pen);
     [DllImport(Dll)] public static extern int GdipDeletePen(IntPtr pen);
     [DllImport(Dll)] public static extern int GdipDrawEllipse(IntPtr g, IntPtr pen, float x, float y, float w, float h);

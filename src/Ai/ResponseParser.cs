@@ -17,7 +17,8 @@ namespace InGameCompanion.Ai;
 /// Ekranda gösterilecek bir hedef: merkez X,Y ve (biliniyorsa) kutu boyu W,H; hepsi 0-1000 ölçeğinde,
 /// yakalanan tam kareye göre (W/H = karenin genişliği/yüksekliği yüzdesi × 10). W=0: boyut bilinmiyor.
 /// </summary>
-internal sealed record PointMark(double X, double Y, string Label, int Step, double W = 0, double H = 0);
+internal sealed record PointMark(double X, double Y, string Label, int Step, double W = 0, double H = 0,
+                                 string Style = "ring", string Desc = "");
 
 internal sealed class ResponseParser
 {
@@ -129,9 +130,22 @@ internal sealed class ResponseParser
             string label = "";
             try { label = (o["label"]?.GetValue<string>() ?? "").Trim(); } catch { }
             if (label.Length > 40) label = label[..40];
+            // "basis": hedefi neye dayanarak ayırt ettiği; "tahmin" ise işaret gösterilmez (yanlış yer göstermek göstermemekten kötü)
+            string basis = "";
+            try { basis = (o["basis"]?.GetValue<string>() ?? "").Trim().ToLowerInvariant(); } catch { }
+            if (basis is "tahmin" or "guess" or "belirsiz" or "unsure") continue;
+            string desc = "", style = "ring";
+            try { desc = (o["desc"]?.GetValue<string>() ?? "").Trim(); } catch { }
+            if (desc.Length > 160) desc = desc[..160];
+            try
+            {
+                var styleText = (o["style"]?.GetValue<string>() ?? "").Trim().ToLowerInvariant();
+                if (styleText is "arrow" or "ok" or "ok işareti") style = "arrow";
+            }
+            catch { }
             int step = list.Count + 1;
             if (TryNum(o["step"], out var st) && st >= 1 && st <= 99) step = (int)st;
-            list.Add(new PointMark(x, y, label, step, bw, bh));
+            list.Add(new PointMark(x, y, label, step, bw, bh, style, desc));
         }
         return list.OrderBy(p => p.Step).Take(4).ToList();
     }

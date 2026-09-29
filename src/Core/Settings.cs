@@ -63,6 +63,11 @@ internal sealed class Settings
     /// <summary>Boşsa GEMINI_API_KEY ortam değişkeni kullanılır.</summary>
     public string ApiKey { get; set; } = "";
     public string Model { get; set; } = "gemini-3.8-flash";
+    /// <summary>
+    /// Ana model kotası dolarsa (ücretsiz katmanda model başına günde ~20 istek!) ya da yoğunsa sırayla denenecek modeller.
+    /// Kota her model için ayrıdır; zincir günlük kapasiteyi katlar. Kotası dolan model, sıfırlanmaya kadar atlanır.
+    /// </summary>
+    public List<string> ModelChain { get; set; } = new() { "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-3.7-flash", "gemini-3.6-flash" };
     /// <summary>Ana model 429/404 verirse istek bu modelle tekrarlanır. "" = kapalı.</summary>
     public string FallbackModel { get; set; } = "gemini-3.5-flash-lite";
     /// <summary>low | medium | high | "" (gönderme). Gecikme için low önerilir.</summary>
@@ -84,10 +89,13 @@ internal sealed class Settings
     public bool PointerMarkers { get; set; } = true;
     /// <summary>İşaretlerin ekranda kalma süresi (sn). Mouse 5'e dokunmak ya da yeni soru hemen kapatır.</summary>
     public double MarkerSeconds { get; set; } = 14;
-    /// <summary>İşaret çıkınca hedefin çevresini kırpıp modele bir kez daha sorarak konumu hassaslaştırır (+1 istek, ~1-2 sn).</summary>
+    /// <summary>
+    /// İşareti doğrular ve hassaslaştırır (+1 istek): cevabı hafif model verdiyse güçlü bir modelle tam ekranda yeniden konumlandırır;
+    /// kutusu büyük (belirsiz) hedefleri kırpıp yakından tekrar sorar.
+    /// </summary>
     public bool PointerRefine { get; set; } = true;
-    /// <summary>Hassaslaştırma sorgusu için model (hafif model yeterince isabetli ve hızlı; kotayı ana modelden ayrı harcar).</summary>
-    public string PointerRefineModel { get; set; } = "gemini-3.5-flash-lite";
+    /// <summary>Doğrulama/hassaslaştırma sorgusu için tercih edilen model. Boş = model zincirindeki güçlü modeller (önerilen).</summary>
+    public string PointerRefineModel { get; set; } = "";
     /// <summary>Yedek modele / aramasız cevaba geçildiğinde kutuda küçük bir uyarı göster (log'a her zaman yazılır).</summary>
     public bool ShowModelNotice { get; set; } = false;
     public int RequestTimeoutSeconds { get; set; } = 45;
@@ -168,7 +176,8 @@ internal sealed class Settings
             !text.Contains("\"FallbackModel\"", StringComparison.OrdinalIgnoreCase) ||
             !text.Contains("\"LiveTranscription\"", StringComparison.OrdinalIgnoreCase) ||
             !text.Contains("\"AnswerLength\"", StringComparison.OrdinalIgnoreCase) ||
-            !text.Contains("\"PointerRefine\"", StringComparison.OrdinalIgnoreCase))
+            !text.Contains("\"PointerRefine\"", StringComparison.OrdinalIgnoreCase) ||
+            !text.Contains("\"ModelChain\"", StringComparison.OrdinalIgnoreCase))
         {
             try { loaded.Save(); } catch { }
         }

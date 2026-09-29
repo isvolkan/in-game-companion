@@ -2,6 +2,17 @@
 
 Her sürüm GitHub'da `vX.Y.Z` etiketiyle (tag) işaretlenir.
 
+## v0.6.0 — 29.09.2026
+- **Ok işareti:** Halkanın yanında, modelin duruma göre seçtiği kalın ok stili (`style: "arrow"`). Yön ekrana sığacak ve diğer işaretlerle çakışmayacak şekilde otomatik seçilir; sallanır, etiketi ve adım rozeti var.
+- **Yoğun ekranlarda doğru düğüm:** Yetenek ağacı gibi adsız simgelerden oluşan ekranlarda hafif model başka bir düğümü gösterebiliyordu (100–370 px).
+  Artık (1) güçlü modeller zincirde öncelikli, (2) cevabı hafif model verdiyse işaretler güçlü bir modelle **tam ekranda yeniden konumlandırılıyor**,
+  (3) model hedefin görünüşünü (`desc`) ve dayanağını (`basis`) yazıyor; dayanağı "tahmin" olan işaret gösterilmiyor,
+  (4) kırpma ince ayarı yalnızca kutusu büyük (belirsiz) hedeflerde çalışıyor ve büyük atlamaları reddediyor (eskiden doğru düğümü bozabiliyordu).
+  Gerçek yetenek ağacı ekranında (uygulama uçtan uca, 2. monitörde): sapma 3–9 px.
+- **Model zinciri (`ModelChain`):** Ücretsiz katmanda kota model başına **günde 20 istek**. Kotası biten model sıfırlanmaya kadar atlanır, sıradaki güçlü modele geçilir.
+  503'te aynı modeli beklemek yerine hemen sıradaki modele geçilir; 14 sn içinde yanıt başlığı gelmeyen model pes edilir.
+- Ayar ekranında/hata mesajında günlük kota ayrımı: "Bu modelin günlük ücretsiz kotası doldu".
+
 ## v0.5.0 — 29.09.2026
 - **Daha isabetli işaret:** Model artık hedefin sıkı sınırlayıcı kutusunu verir (halkanın boyu buna uyar). Ardından hedefin çevresi
   ekrandan kırpılıp büyütülür ve model bir kez daha, yakından bakar (`PointerRefine`, tek toplu istek, `PointerRefineModel`);

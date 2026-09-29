@@ -84,7 +84,7 @@ internal sealed class GeminiClient
     private long _searchBlockedUntilTicks;
 
     /// <summary>
-    /// Kotası dolan (429) modeller bir süre atlanır: yanıttaki "retry in Ns" süresi kadar (yoksa 5 dk).
+    /// Kotası dolan modeller atlanır: günlük kotada (PerDay) sıfırlanmaya kadar, dakikalıkta yanıttaki süre kadar.
     /// Böylece her soruda önce dolu modele gidip vakit kaybedilmez.
     /// </summary>
     private readonly ConcurrentDictionary<string, long> _modelBlockedUntil = new(StringComparer.OrdinalIgnoreCase);
@@ -93,18 +93,63 @@ internal sealed class GeminiClient
 
     private void BlockModel(string model, string message)
     {
-        double secs = 300;
-        var m = Regex.Match(message ?? "", @"retry in ([0-9]+(?:\.[0-9]+)?)s", RegexOptions.IgnoreCase);
-        if (m.Success && double.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d))
-            secs = Math.Clamp(d + 1, 5, 900);
-        _modelBlockedUntil[model] = (DateTime.UtcNow + TimeSpan.FromSeconds(secs)).Ticks;
-        Log.Warn($"{model} kotası dolu; {secs:F0} sn boyunca atlanacak");
+        TimeSpan span;
+        if (message.Contains("PerDay", StringComparison.OrdinalIgnoreCase))
+            span = UntilQuotaReset();
+        else
+        {
+            double secs = 300;
+            var m = Regex.Match(message, @"retry in ([0-9]+(?:\.[0-9]+)?)s", RegexOptions.IgnoreCase);
+            if (m.Success && double.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d))
+                secs = Math.Clamp(d + 1, 5, 900);
+            span = TimeSpan.FromSeconds(secs);
+        }
+        _modelBlockedUntil[model] = (DateTime.UtcNow + span).Ticks;
+        Log.Warn($"{model} kotası dolu; {(span.TotalMinutes < 2 ? span.TotalSeconds.ToString("F0") + " sn" : span.TotalMinutes.ToString("F0") + " dk")} boyunca atlanacak");
     }
+
+    /// <summary>Günlük ücretsiz kota Pasifik saatiyle gece yarısı sıfırlanır.</summary>
+    private static TimeSpan UntilQuotaReset()
+    {
+        try
+        {
+            var tz = TimeZoneInfo.FindSystemTimeZoneById("Pacific Standard Time");
+            var now = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, tz);
+            var next = new DateTimeOffset(now.Date.AddDays(1), now.Offset);
+            return Clamp(next - now + TimeSpan.FromMinutes(2));
+        }
+        catch { return TimeSpan.FromHours(6); }
+        static TimeSpan Clamp(TimeSpan t) => t < TimeSpan.FromMinutes(5) ? TimeSpan.FromMinutes(5) : (t > TimeSpan.FromHours(25) ? TimeSpan.FromHours(25) : t);
+    }
+
+    /// <summary>Denenecek modeller sırayla: Model, ModelChain…, FallbackModel (yinelenenler ve boşlar atılır).</summary>
+    internal static List<string> BuildChain(Settings s)
+    {
+        var list = new List<string>();
+        void Add(string? m)
+        {
+            m = m?.Trim();
+            if (!string.IsNullOrEmpty(m) && !list.Exists(x => string.Equals(x, m, StringComparison.OrdinalIgnoreCase))) list.Add(m);
+        }
+        Add(s.Model);
+        if (s.ModelChain != null) foreach (var m in s.ModelChain) Add(m);
+        Add(s.FallbackModel);
+        return list;
+    }
+
+    /// <summary>Zincirde <paramref name="idx"/>'ten sonraki ilk kotası dolmamış model (yoksa sonraki; hiç yoksa -1).</summary>
+    private int NextIndex(List<string> chain, int idx)
+    {
+        for (int i = idx + 1; i < chain.Count; i++)
+            if (!IsBlocked(chain[i])) return i;
+        return idx + 1 < chain.Count ? idx + 1 : -1;
+    }
+
     private static readonly TimeSpan SearchBlockDuration = TimeSpan.FromMinutes(30);
 
     /// <summary>
-    /// Soruyu sorar. 429 gelirse önce web aramasız, sonra yedek modelle tekrar dener.
-    /// 429/404 yanıtı başlıkta döndüğü için o ana kadar ekrana hiçbir metin akmamış olur.
+    /// Soruyu sorar. Sırayla: web araması kotası doluysa aramasız; 5xx'te aynı model bir kez daha; 429/404/5xx'te zincirdeki
+    /// sıradaki modele geçer. 429/404 yanıtı başlıkta döndüğü için o ana kadar ekrana hiçbir metin akmamış olur.
     /// </summary>
     /// <param name="onReset">
     /// Akış metin göndermeye başladıktan sonra koptuysa (ör. cevabın ortasında 503) ve yeniden denenecekse çağrılır:
@@ -122,17 +167,16 @@ internal sealed class GeminiClient
         }
 
         var s = _settings();
-        var model = s.Model;
-        var fallback = string.IsNullOrWhiteSpace(s.FallbackModel) ? null : s.FallbackModel.Trim();
+        var chain = BuildChain(s);
+        if (chain.Count == 0) chain.Add(s.Model);
+        int idx = 0;
+        while (idx < chain.Count - 1 && IsBlocked(chain[idx])) idx++;
+        var model = chain[idx];
         bool search = s.UseWebSearch && DateTime.UtcNow.Ticks >= Interlocked.Read(ref _searchBlockedUntilTicks);
         var notices = new List<string>();
         if (s.UseWebSearch && !search) notices.Add("Web araması kotası dolu, aramasız cevaplandı.");
+        if (idx > 0) notices.Add($"{chain[0]} kullanılamadı, {model} ile cevaplandı.");
         bool sameModelRetried = false;
-        if (fallback != null && !string.Equals(model, fallback, StringComparison.OrdinalIgnoreCase) && IsBlocked(model))
-        {
-            notices.Add($"{model} kotası dolu, {fallback} ile cevaplandı.");
-            model = fallback;
-        }
 
         while (true)
         {
@@ -149,25 +193,33 @@ internal sealed class GeminiClient
                 notices.Add("Web araması kotası dolu, aramasız cevaplandı.");
                 Retrying();
             }
-            catch (GeminiException ex) when (ex.Status >= 500 && !sameModelRetried)
+            catch (GeminiException ex) when (ex.Status >= 500 && !sameModelRetried && NextIndex(chain, idx) < 0)
             {
-                // 503 "yoğun talep" genelde birkaç saniyelik: önce aynı modeli bir kez daha dene (yedek model daha zayıf)
+                // Zincirde başka model kalmadıysa 503 "yoğun talep" için aynı modeli bir kez daha dene
                 sameModelRetried = true;
                 Log.Warn($"Gemini {ex.Status} ({model}): {ex.Message} → aynı model bir kez daha deneniyor");
                 await Task.Delay(700, ct).ConfigureAwait(false);
                 Retrying();
             }
-            catch (GeminiException ex) when ((ex.Status == 429 || ex.Status == 404 || ex.Status >= 500)
-                                             && fallback != null
-                                             && !string.Equals(model, fallback, StringComparison.OrdinalIgnoreCase))
+            catch (GeminiException ex) when ((ex.Status == 429 || ex.Status == 404 || ex.Status >= 500) && NextIndex(chain, idx) >= 0)
             {
-                Log.Warn($"Gemini {ex.Status} ({model}): {ex.Message} → yedek model {fallback}");
                 if (ex.Status == 429) BlockModel(model, ex.Message);
-                notices.Add($"{model} kullanılamadı ({ex.Status}), yedek model {fallback} ile cevaplandı.");
-                model = fallback;
+                else if (ex.Status >= 500) _modelBlockedUntil[model] = (DateTime.UtcNow + TimeSpan.FromSeconds(45)).Ticks;   // kısa soğuma
+                int next = NextIndex(chain, idx);
+                Log.Warn($"Gemini {ex.Status} ({model}): {ShortMsg(ex.Message)} → sıradaki model {chain[next]}");
+                idx = next;
+                model = chain[idx];
+                sameModelRetried = false;
+                notices.Add($"{chain[0]} kullanılamadı ({ex.Status}), {model} ile cevaplandı.");
                 Retrying();
             }
         }
+    }
+
+    private static string ShortMsg(string m)
+    {
+        var line = m.Split('\n')[0];
+        return line.Length > 90 ? line[..90] + "…" : line;
     }
 
     private async Task<AskResult> AskOnceAsync(AskRequest r, Settings s, string model, bool search,
@@ -191,7 +243,16 @@ internal sealed class GeminiClient
         req.Headers.Add("x-goog-api-key", key);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
 
-        using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+        // Yoğun modeller hata vermeden önce 10-25 sn bekletebiliyor: başlık çok gecikirse pes edip sıradaki modele geç
+        using var headerCts = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        headerCts.CancelAfter(TimeSpan.FromSeconds(14));
+        HttpResponseMessage resp;
+        try { resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, headerCts.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (headerCts.IsCancellationRequested && !timeout.IsCancellationRequested)
+        {
+            throw new GeminiException(503, $"{model} yanıt vermedi (14 sn)");
+        }
+        using var respScope = resp;
         if (!resp.IsSuccessStatusCode)
         {
             var err = await resp.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
@@ -277,24 +338,29 @@ internal sealed class GeminiClient
         return new AskResult(text.ToString(), sources, queries, promptTok, outTok, thoughtTok, firstTokenMs, sw.ElapsedMilliseconds, model);
     }
 
+    private static bool IsLite(string model) => model.Contains("lite", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Kırpmalarda aranan nesnelerin sınırlayıcı kutusunu ister (tek istekte toplu). Her kırpma için
-    /// [ymin,xmin,ymax,xmax] (0-1000, o kırpmaya göre) ya da bulunamadıysa null döner. 5xx/429'da bir kez tekrar dener,
-    /// sonra yedek modele geçer.
+    /// [ymin,xmin,ymax,xmax] (0-1000, o kırpmaya göre) ya da bulunamadıysa null döner.
     /// </summary>
-    public async Task<double[]?[]> LocateAsync(IReadOnlyList<(string Label, byte[] Jpeg)> crops, CancellationToken ct)
+    public Task<double[]?[]> LocateAsync(IReadOnlyList<(string Label, string Desc, byte[] Jpeg)> crops, string context, CancellationToken ct)
     {
-        var s = _settings();
-        var key = s.ResolvedApiKey;
-        if (string.IsNullOrEmpty(key)) throw new InvalidOperationException("API anahtarı yok");
-
         var parts = new JsonArray
         {
-            new JsonObject { ["text"] = "Aşağıdaki her görüntü, bir oyun ekranından alınmış küçük bir kırpma. Her kırpma için aranan nesneyi bul; nesne büyük olasılıkla kırpmanın merkezine yakındır." },
+            new JsonObject
+            {
+                ["text"] = "Aşağıdaki her görüntü, bir oyun ekranından alınmış küçük bir kırpma. Her kırpma için aranan nesneyi bul; nesne büyük olasılıkla kırpmanın merkezine yakındır." +
+                           (string.IsNullOrWhiteSpace(context) ? "" : "\nBağlam — " + context.Trim()),
+            },
         };
         for (int i = 0; i < crops.Count; i++)
         {
-            parts.Add(new JsonObject { ["text"] = $"Kırpma {i + 1} — aranan nesne: \"{crops[i].Label}\"" });
+            parts.Add(new JsonObject
+            {
+                ["text"] = $"Kırpma {i + 1} — aranan nesne: \"{crops[i].Label}\"" +
+                           (string.IsNullOrWhiteSpace(crops[i].Desc) ? "" : $" — görünüşü/yeri: {crops[i].Desc}"),
+            });
             parts.Add(InlineData("image/jpeg", crops[i].Jpeg));
         }
         parts.Add(new JsonObject
@@ -302,8 +368,49 @@ internal sealed class GeminiClient
             ["text"] = "Her kırpma için aranan nesnenin SIKI sınırlayıcı kutusunu ver (yalnızca nesnenin kendisi, çevresi değil). " +
                        "Sadece JSON dizisi döndür: [{\"i\":1,\"box_2d\":[ymin,xmin,ymax,xmax]},{\"i\":2,\"none\":true}]. " +
                        "Koordinatlar 0-1000 ölçeğinde ve İLGİLİ KIRPMAYA göre (x soldan sağa, y yukarıdan aşağı). " +
-                       "Nesne o kırpmada yoksa ya da emin değilsen none:true yaz; tahmin etme.",
+                       "Kırpmada birbirine benzeyen birçok öğe olabilir: tarife ve bağlama EN ÇOK uyanı seç. " +
+                       "Nesne o kırpmada yoksa ya da tarife uyan öğeyi kesin ayırt edemiyorsan none:true yaz; tahmin etme.",
         });
+        return LocateCoreAsync(parts, crops.Count, strongOnly: false, ct);
+    }
+
+    /// <summary>
+    /// Hedefleri TAM karede yeniden konumlandırır (güçlü model gerekir; hafif model atlanır, hiçbiri yoksa hepsi null).
+    /// Hafif modelin yoğun ekranlarda (yetenek ağacı gibi) yanlış öğeyi göstermesini düzeltmek için.
+    /// </summary>
+    public Task<double[]?[]> LocateOnFrameAsync(byte[] fullJpeg, IReadOnlyList<(string Label, string Desc)> targets, string context, CancellationToken ct)
+    {
+        var parts = new JsonArray
+        {
+            new JsonObject
+            {
+                ["text"] = "Aşağıdaki görüntü bir oyun ekranının tamamı. Aşağıdaki her hedefi bu ekranda bul." +
+                           (string.IsNullOrWhiteSpace(context) ? "" : "\nBağlam — " + context.Trim()),
+            },
+            InlineData("image/jpeg", fullJpeg),
+        };
+        var sb = new StringBuilder();
+        for (int i = 0; i < targets.Count; i++)
+        {
+            sb.Append($"Hedef {i + 1} — aranan: \"{targets[i].Label}\"");
+            if (!string.IsNullOrWhiteSpace(targets[i].Desc)) sb.Append($" — görünüşü/yeri: {targets[i].Desc}");
+            sb.Append('\n');
+        }
+        sb.Append("Her hedef için SIKI sınırlayıcı kutuyu ver (yalnızca hedefin kendisi). Sadece JSON dizisi döndür: " +
+                  "[{\"i\":1,\"box_2d\":[ymin,xmin,ymax,xmax]},{\"i\":2,\"none\":true}]. " +
+                  "Koordinatlar 0-1000 ölçeğinde ve TÜM görüntüye göre (x soldan sağa, y yukarıdan aşağı). " +
+                  "Birbirine benzeyen birçok öğe olabilir: tarife, bağlama, seçili/vurgulu olma ve komşuluklara EN ÇOK uyanı seç. " +
+                  "Hangisi olduğunu kesin ayırt edemiyorsan none:true yaz; tahmin etme.");
+        parts.Add(new JsonObject { ["text"] = sb.ToString() });
+        return LocateCoreAsync(parts, targets.Count, strongOnly: true, ct);
+    }
+
+    private async Task<double[]?[]> LocateCoreAsync(JsonArray parts, int count, bool strongOnly, CancellationToken ct)
+    {
+        var s = _settings();
+        var key = s.ResolvedApiKey;
+        if (string.IsNullOrEmpty(key)) throw new InvalidOperationException("API anahtarı yok");
+
         var body = new JsonObject
         {
             ["contents"] = new JsonArray(new JsonObject { ["role"] = "user", ["parts"] = parts }),
@@ -315,14 +422,22 @@ internal sealed class GeminiClient
         };
         var payload = body.ToJsonString();
 
+        // Model sırası: (tercih edilen) → zincirdeki güçlü modeller → (kırpmada) hafif modeller. Kotası dolanlar atlanır.
         var models = new List<string>();
-        foreach (var m in new[] { s.PointerRefineModel, s.Model, s.FallbackModel })
-            if (!string.IsNullOrWhiteSpace(m) && !models.Exists(x => string.Equals(x, m.Trim(), StringComparison.OrdinalIgnoreCase))
-                && !IsBlocked(m.Trim()))
-                models.Add(m.Trim());
+        void Add(string? m)
+        {
+            m = m?.Trim();
+            if (string.IsNullOrEmpty(m) || (strongOnly && IsLite(m)) || IsBlocked(m)) return;
+            if (!models.Exists(x => string.Equals(x, m, StringComparison.OrdinalIgnoreCase))) models.Add(m);
+        }
+        Add(s.PointerRefineModel);
+        var chain = BuildChain(s);
+        foreach (var m in chain) if (!IsLite(m)) Add(m);
+        foreach (var m in chain) if (IsLite(m)) Add(m);
+        if (models.Count == 0) return new double[count][];
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(14));
+        timeout.CancelAfter(TimeSpan.FromSeconds(16));
         GeminiException? last = null;
         foreach (var model in models)
         {
@@ -335,7 +450,11 @@ internal sealed class GeminiClient
                 req.Headers.Add("x-goog-api-key", key);
                 using var resp = await Http.SendAsync(req, timeout.Token).ConfigureAwait(false);
                 var json = await resp.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
-                if (resp.IsSuccessStatusCode) return ParseBoxes(json, crops.Count);
+                if (resp.IsSuccessStatusCode)
+                {
+                    Log.Info($"  Konum sorgusu: {model}");
+                    return ParseBoxes(json, count);
+                }
                 last = new GeminiException((int)resp.StatusCode, ExtractError(json));
                 if ((int)resp.StatusCode == 429) { BlockModel(model, last.Message); break; }   // kota: aynı modeli tekrar deneme
                 if ((int)resp.StatusCode >= 500) { await Task.Delay(500, timeout.Token).ConfigureAwait(false); continue; }
@@ -480,7 +599,16 @@ internal sealed class GeminiClient
         {
             var n = JsonNode.Parse(body.TrimStart('[').TrimEnd(']'));
             var m = n?["error"]?["message"]?.GetValue<string>();
-            if (!string.IsNullOrWhiteSpace(m)) return m;
+            if (!string.IsNullOrWhiteSpace(m))
+            {
+                // Kota ihlalinin kimliği (ör. ...PerDay...) günlük/dakikalık ayrımı için mesaja eklenir
+                if (n?["error"]?["details"] is JsonArray details)
+                    foreach (var d in details)
+                        if (d?["@type"]?.GetValue<string>()?.EndsWith("QuotaFailure", StringComparison.Ordinal) == true
+                            && d["violations"]?[0]?["quotaId"]?.GetValue<string>() is { Length: > 0 } qid)
+                            m += " [" + qid + "]";
+                return m;
+            }
         }
         catch { }
         return body.Length > 400 ? body[..400] : body;
@@ -498,6 +626,8 @@ internal sealed class GeminiException : Exception
         400 => "İstek reddedildi: " + Short(Message),
         401 or 403 => "API anahtarı geçersiz ya da yetkisiz.",
         404 => "Model bulunamadı — settings.json'daki Model adını kontrol et.",
+        429 when Message.Contains("PerDay", StringComparison.OrdinalIgnoreCase)
+            => "Bu modelin günlük ücretsiz kotası doldu. Ayarlar'dan başka model seç ya da yarın tekrar dene.",
         429 when Message.Contains("limit: 0", StringComparison.OrdinalIgnoreCase)
             => "Bu model ücretsiz katmanda yok (limit 0). AI Studio'da faturalandırmayı aç ya da Model'i değiştir.",
         429 => "Kota/hız sınırı doldu. Biraz bekleyip tekrar dene (limitler: aistudio.google.com/rate-limit).",

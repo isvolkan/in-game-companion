@@ -33,6 +33,8 @@ internal sealed class MarkerOverlay : IDisposable
         public double TX, TY, TR;       // hedef
         public string Label = "";
         public int Step;
+        public bool Arrow;              // true: halka yerine ok
+        public double DX, DY;           // ok yönü: hedeften dışarı doğru birim vektör (okun kuyruğu bu tarafta)
     }
 
     private List<Mark> _marks = new();
@@ -125,9 +127,11 @@ internal sealed class MarkerOverlay : IDisposable
         foreach (var p in points)
         {
             var (x, y, r) = ToScreen(p);
-            marks.Add(new Mark { X = x, Y = y, R = r, TX = x, TY = y, TR = r, Label = p.Label, Step = p.Step });
+            marks.Add(new Mark { X = x, Y = y, R = r, TX = x, TY = y, TR = r, Label = p.Label, Step = p.Step,
+                                 Arrow = p.Style == "arrow" });
         }
         _marks = marks;
+        AssignDirections();
         _numbered = marks.Count > 1;
         _start = _lastTick = DateTime.UtcNow;
         _until = _start.AddSeconds(Math.Clamp(seconds, 2, 120));
@@ -155,6 +159,7 @@ internal sealed class MarkerOverlay : IDisposable
             var (x, y, r) = ToScreen(points[i]);
             _marks[i].TX = x; _marks[i].TY = y; _marks[i].TR = r;
         }
+        AssignDirections();
         Log.Info("İşaret güncellendi: " + string.Join(" → ", _marks.ConvertAll(m => $"{m.Step}:{m.Label}@{m.TX:F0},{m.TY:F0}")));
     }
 
@@ -171,16 +176,60 @@ internal sealed class MarkerOverlay : IDisposable
         double s = Win32.GetMonitorScale(Win32.MonitorFromPoint(
             new Win32.POINT(_left + (int)(p.X / 1000.0 * _fw), _top + (int)(p.Y / 1000.0 * _fh)), Win32.MONITOR_DEFAULTTONEAREST));
         double x = _left + p.X / 1000.0 * _fw, y = _top + p.Y / 1000.0 * _fh;
-        double r = 34 * s;
+        bool arrow = p.Style == "arrow";
+        double r = arrow ? 16 * s : 34 * s;
         if (p.W > 0 && p.H > 0)
         {
             double boxPx = Math.Max(p.W / 1000.0 * _fw, p.H / 1000.0 * _fh);
-            r = Math.Clamp(boxPx / 2 * 1.15 + 9 * s, 24 * s, 110 * s);
+            r = arrow ? Math.Clamp(boxPx / 2 + 4 * s, 12 * s, 90 * s)      // ok: hedefin kenarına yakın dursun
+                      : Math.Clamp(boxPx / 2 * 1.15 + 9 * s, 24 * s, 110 * s);
         }
         return (x, y, r);
     }
 
     // ------------------------------------------------------------------ Çizim
+
+    private static readonly (double x, double y)[] ArrowDirs =
+    {
+        (0, -1), (-0.707, -0.707), (0.707, -0.707), (-1, 0), (1, 0), (0, 1), (-0.707, 0.707), (0.707, 0.707),
+    };
+
+    /// <summary>
+    /// Her ok için kuyruğun (ve etiketin) ekrana sığdığı, diğer işaretlerin üstüne düşmediği ilk yönü seçer.
+    /// Tercih sırası: üstten, sol/sağ üst çapraz, yanlardan, alttan.
+    /// </summary>
+    private void AssignDirections()
+    {
+        float s = (float)_scale;
+        foreach (var m in _marks)
+        {
+            if (!m.Arrow) continue;
+            double reach = m.TR + (6 + 54 + 40) * s;              // hedeften kuyruk ucu + etiket payı
+            double labelReach = string.IsNullOrEmpty(m.Label) ? 0 : 150 * s;
+            (double x, double y) chosen = ArrowDirs[0];
+            bool found = false;
+            foreach (var d in ArrowDirs)
+            {
+                double ex = m.TX + d.x * reach, ey = m.TY + d.y * reach;
+                double margin = 24 * s;
+                bool inside = ex > _mon.Left + margin && ex < _mon.Right - margin && ey > _mon.Top + margin && ey < _mon.Bottom - margin;
+                if (inside && Math.Abs(d.x) > 0.5)   // yatay yönde etiket de yana taşar
+                    inside = ex + d.x * labelReach > _mon.Left + margin && ex + d.x * labelReach < _mon.Right - margin;
+                if (!inside) continue;
+                bool clear = true;
+                foreach (var o in _marks)
+                {
+                    if (ReferenceEquals(o, m)) continue;
+                    double dist = Math.Sqrt(Math.Pow(ex - o.TX, 2) + Math.Pow(ey - o.TY, 2));
+                    if (dist < o.TR + 30 * s) { clear = false; break; }
+                }
+                if (!clear) continue;
+                chosen = d; found = true; break;
+            }
+            if (!found) chosen = ArrowDirs[0];
+            m.DX = chosen.x; m.DY = chosen.y;
+        }
+    }
 
     private void Keep()
     {
@@ -257,7 +306,7 @@ internal sealed class MarkerOverlay : IDisposable
         {
             var m = _marks[i];
             labelW[i] = string.IsNullOrEmpty(m.Label) ? 0 : _text.Measure(f.SmallBold, m.Label) + padX * 2;
-            float ext = (float)Math.Max(m.R, m.TR) * 2;
+            float ext = m.Arrow ? (float)Math.Max(m.R, m.TR) + 190 * s : (float)Math.Max(m.R, m.TR) * 2;
             foreach (var (px, py) in new[] { (m.X, m.Y), (m.TX, m.TY) })
             {
                 minX = Math.Min(minX, (int)(px - ext - labelW[i]));
@@ -283,6 +332,12 @@ internal sealed class MarkerOverlay : IDisposable
             var m = _marks[i];
             float R = (float)m.R;
             float cx = (float)(m.X - minX), cy = (float)(m.Y - minY);
+
+            if (m.Arrow)
+            {
+                DrawArrowMark(m, cx, cy, R, labelW[i], s, accent, t, f, padX, padY);
+                continue;
+            }
 
             // Genişleyip sönen dış halka
             float r2 = R * (1f + (float)phase * 0.6f);
@@ -329,6 +384,63 @@ internal sealed class MarkerOverlay : IDisposable
         };
         if (!Win32.UpdateLayeredWindow(_hwnd, _screenDc, ref dst, ref size, _memDc, ref srcPt, 0, ref blend, Win32.ULW_ALPHA))
             Log.Warn("İşaret UpdateLayeredWindow başarısız: " + Marshal.GetLastWin32Error());
+    }
+
+    /// <summary>
+    /// Hedefi gösteren kalın ok: ucu hedefin kenarında, kuyruğu <see cref="Mark.DX"/>/<see cref="Mark.DY"/> yönünde; hafifçe ileri-geri sallanır.
+    /// Etiket hapı kuyruğun ucunda durur. Koyu dış çizgi her arka planda okunmasını sağlar.
+    /// </summary>
+    private void DrawArrowMark(Mark m, float cx, float cy, float R, float labelW, float s, uint accent, double t,
+                               TextRenderer.Fonts f, float padX, float padY)
+    {
+        float dx = (float)m.DX, dy = (float)m.DY;
+        float nx = -dy, ny = dx;                                   // dik vektör
+        float bob = (float)(Math.Sin(t * Math.PI * 2 / 0.8) * 6 * s);
+        float gap = 6 * s + Math.Max(0, bob);
+        float len = 54 * s, hl = 26 * s, hw = 32 * s, sw = 11 * s;
+        float tx = cx + dx * (R + gap), ty = cy + dy * (R + gap);   // ok ucu
+        float bx = tx + dx * hl, by = ty + dy * hl;                 // gövde-baş birleşimi
+        float ex = tx + dx * len, ey = ty + dy * len;               // kuyruk
+        var pts = new[]
+        {
+            new Gdip.PointF(tx, ty),
+            new Gdip.PointF(bx + nx * hw / 2, by + ny * hw / 2),
+            new Gdip.PointF(bx + nx * sw / 2, by + ny * sw / 2),
+            new Gdip.PointF(ex + nx * sw / 2, ey + ny * sw / 2),
+            new Gdip.PointF(ex - nx * sw / 2, ey - ny * sw / 2),
+            new Gdip.PointF(bx - nx * sw / 2, by - ny * sw / 2),
+            new Gdip.PointF(bx - nx * hw / 2, by - ny * hw / 2),
+        };
+        Gdip.GdipCreatePen1(Argb(200, 0x000000), 6 * s, 2, out var dark);
+        Gdip.GdipSetPenLineJoin(dark, 2);
+        Gdip.GdipDrawPolygon(_g, dark, pts, pts.Length);
+        Gdip.GdipDeletePen(dark);
+        Gdip.GdipCreateSolidFill(Argb(255, accent), out var fill);
+        Gdip.GdipFillPolygon(_g, fill, pts, pts.Length, 0);
+        Gdip.GdipDeleteBrush(fill);
+        Gdip.GdipCreatePen1(Argb(230, 0xFFFFFF), Math.Max(1.2f, 1.6f * s), 2, out var light);
+        Gdip.GdipSetPenLineJoin(light, 2);
+        Gdip.GdipDrawPolygon(_g, light, pts, pts.Length);
+        Gdip.GdipDeletePen(light);
+
+        // Adım rozeti: okun ucunun yanında
+        if (_numbered)
+        {
+            float badge = 22 * s;
+            float bcx = tx + nx * (hw / 2 + badge / 2 + 2 * s), bcy = ty + ny * (hw / 2 + badge / 2 + 2 * s);
+            FillCircle(bcx - badge / 2, bcy - badge / 2, badge, Argb(255, accent));
+            string n = m.Step.ToString(CultureInfo.InvariantCulture);
+            float nw = _text.Measure(f.SmallBold, n);
+            _ops.Add(new TextRenderer.Op { Text = n, X = bcx - nw / 2, Y = bcy - f.SmallLine / 2, Font = f.SmallBold, Color = 0xFFFFFFFF, LineHeight = f.SmallLine });
+        }
+
+        if (labelW > 0)
+        {
+            float lh = f.SmallLine + padY * 2;
+            float lcx = ex + dx * 8 * s + dx * labelW / 2, lcy = ey + dy * 8 * s + dy * lh / 2;
+            FillRoundRect(lcx - labelW / 2, lcy - lh / 2, labelW, lh, lh / 2, Argb(230, 0x0D1015));
+            _ops.Add(new TextRenderer.Op { Text = m.Label, X = lcx - labelW / 2 + padX, Y = lcy - lh / 2 + padY, Font = f.SmallBold, Color = 0xFFFFFFFF, LineHeight = f.SmallLine });
+        }
     }
 
     /// <summary>Koyu gölgeli halka (her arka planda okunsun diye önce geniş koyu, sonra renkli çizgi).</summary>

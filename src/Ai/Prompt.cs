@@ -89,13 +89,17 @@ Oyuncu "ipucu" derse sadece bir sonraki adımı ima et, çözümü söyleme. Aks
             sb.Append("""
 
 # EKRANDA İŞARET GÖSTERME (isteğe bağlı — oyuncuya gösterilmez)
-Oyuncu bir şeyin ekranda NEREDE olduğunu, NEYE basacağını ya da NEREYE gitmesi gerektiğini soruyorsa VE hedef Görüntü 1'de AÇIKÇA görünüyorsa, cevabın metninden sonra (@@MEM satırından ÖNCE) her hedef için ayrı bir satır yaz:
-@@POINT {"box":[ymin,xmin,ymax,xmax],"label":"Harita","step":1}
+Oyuncu bir şeyin ekranda NEREDE olduğunu, NEYE basacağını ya da NEREYE gitmesi gerektiğini soruyorsa VE hedefi Görüntü 1'de KESİN olarak ayırt edebiliyorsan, cevabın metninden sonra (@@MEM satırından ÖNCE) her hedef için ayrı bir satır yaz:
+@@POINT {"box":[ymin,xmin,ymax,xmax],"label":"Harita","desc":"sağ üstteki menü çubuğunda, Envanter sekmesinin yanındaki sekme","basis":"ad","style":"ring","step":1}
 - box: hedef öğenin (simge, düğme, yazı, nesne) SIKI sınırlayıcı kutusu; [ymin, xmin, ymax, xmax], 0-1000 ölçeğinde, Görüntü 1'in sol üst köşesinden (x soldan sağa, y yukarıdan aşağı). Kırpmaya (Görüntü 2) göre değil, HER ZAMAN Görüntü 1'e göre ver. Kutuyu küçük tut: yalnızca hedefin kendisini sarsın, çevresini değil.
-- Aynı türden birden çok hedef varsa (ör. "bütün X simgeleri") her biri için ayrı satır yaz (toplam en fazla 4).
 - label: en fazla 3 kelime, ekranda yazdığı gibi.
-- step: birden fazla adım/hedef varsa 1, 2, 3 ... sırasıyla (en fazla 4 nokta). Tek hedefte 1.
-- Hedef görünmüyorsa (kapalı menü, harita dışı vb.) HİÇ @@POINT yazma; cevapta menüyü nasıl açacağını yazıyla anlat. Tahmin etme, nokta uydurma.
+- desc: hedefin GÖRÜNÜŞÜ ve YERİ, en fazla 20 kelime: simgenin şekli/rengi/çerçevesi ve komşuları (ör. "mavi çerçeveli kalkan simgesi, ağacın ortasındaki seçili düğümün hemen üstünde"). Hedefe yakından bakan ikinci bir kontrol doğru öğeyi bu tarifle bulacak; "bir yetenek" gibi belirsiz yazma.
+- basis: hedefi neye dayanarak ayırt ettiğin: "ad" (adı ekranda yazıyor), "seçili" (seçili/vurgulu ya da bilgi kutusundaki simgeyle eşleşiyor), "özellik" (kesin ayırt edici görünür özelliği var) ya da "tahmin". "tahmin" ise o satırı HİÇ yazma.
+- style: "ring" (halka) küçük ve ayrık öğeler için (düğme, simge, sekme, tek bir düğüm). "arrow" (ok) geniş alanlar, haritada bir yer/bölge, dünyadaki bir nesne/konum ya da halkanın komşuları örteceği kalabalık yerler için.
+- step: birden fazla adım/hedef varsa 1, 2, 3 ... sırasıyla (en fazla 4 nokta). Aynı türden birden çok hedef varsa (ör. "bütün X simgeleri") her biri için ayrı satır yaz. Tek hedefte 1.
+- KESİNLİK KURALI: İsimleri görünmeyen, birbirine benzeyen simgelerden oluşan yerlerde (yetenek ağacı, envanter ızgarası, harita simgeleri) bir öğenin HANGİSİ olduğunu yalnızca şunlardan biriyle bilebilirsin: üstünde/yanında okunan isim ya da açık bilgi kutusu, seçili/vurgulu olması, ya da tarif edilebilir ayırt edici bir özellik. Bunlardan biri yoksa TAHMİN ETME: nokta koyma; cevapta öğeyi yazıyla anlat (ör. "imleci düğümün üstüne getirip adını oku"). Yanlış yeri göstermek hiç göstermemekten kötüdür.
+  Örnek: bilgi kutusunda "X yeteneği gerekli" yazıyor ama ağaçtaki düğümlerin adı görünmüyorsa, X'in HANGİ düğüm olduğunu bilemezsin → X için nokta koyma. Seçili düğüm ise (vurgulu halka + bilgi kutusundaki simge eşleşiyor) onu gösterebilirsin.
+- Hedef görünmüyorsa (kapalı menü, harita dışı vb.) HİÇ @@POINT yazma; cevapta menüyü nasıl açacağını yazıyla anlat.
 - Metinde de kısaca söyle ("Sağ üstteki **Harita** simgesine bas"); işaret sadece yardımcıdır.
 """);
         }

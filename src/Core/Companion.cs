@@ -295,7 +295,7 @@ internal sealed class Companion
                 var footerText = string.Join(" · ", new[] { s.ShowModelNotice ? result.Notice : null, upd?.Footer }.Where(x => !string.IsNullOrEmpty(x)));
                 var footer = footerText.Length == 0 ? null : footerText;
                 _overlay.Invoke(o => o.Complete(sources, footer));
-                ShowPoints(id, ct, parser, cap, s);
+                ShowPoints(id, ct, parser, cap, s, parser.Question, answer, result.Model);
                 if (upd != null && (upd.NewQuest != null || upd.NewRegion != null))
                     Log.Info($"  Hafıza: yeni görev={upd.NewQuest ?? "-"}, yeni bölge={upd.NewRegion ?? "-"}");
             }
@@ -348,71 +348,120 @@ internal sealed class Companion
     }
 
     /// <summary>Modelin @@POINT satırları varsa ekranda işaret gösterir (yakalama karesine göre ekran pikseline çevrilir).</summary>
-    private void ShowPoints(int id, CancellationToken ct, ResponseParser parser, CaptureResult cap, Settings s)
+    private void ShowPoints(int id, CancellationToken ct, ResponseParser parser, CaptureResult cap, Settings s, string question, string answer, string answeredBy)
     {
         if (!s.PointerMarkers) return;
         var pts = parser.ParsePoints();
         if (pts.Count == 0) return;
         _overlay.Invoke(_ => _markers.Show(pts, cap.ScreenLeft, cap.ScreenTop, cap.SourceWidth, cap.SourceHeight, s.MarkerSeconds));
-        if (s.PointerRefine) _ = RefinePointsAsync(id, ct, pts, cap, s);
+        if (s.PointerRefine)
+        {
+            var shortAnswer = answer.Length > 350 ? answer[..350] + "…" : answer;
+            _ = ImprovePointsAsync(id, ct, pts, cap, s, $"Oyuncunun sorusu: {question}. Asistanın cevabı: {shortAnswer}", answeredBy);
+        }
     }
 
     /// <summary>
-    /// İşaret konumunu hassaslaştırır: her ilk tahminin çevresinden kare bir bölgeyi (kare genişliğinin ~%22'si) o anki
-    /// ekrandan alıp büyütür ve tek toplu istekle modelden nesnenin sıkı kutusunu ister. Küçük simgelerde sapmayı
-    /// birkaç pikselde tutar. Başarısız olursa ilk tahmin kalır; halkalar yeni yere yumuşakça kayar.
+    /// İşaretleri iyileştirir (en fazla iki aşama, ikisi de başarısız olursa ilk tahmin kalır; halkalar yeni yere yumuşakça kayar):
+    /// A) Cevabı HAFİF model verdiyse: hafif model yoğun ekranlarda (yetenek ağacı gibi) yanlış öğeyi seçebildiği için hedefler
+    ///    güçlü bir modelle tam karede yeniden konumlandırılır.
+    /// B) Kutusu büyük (yani belirsiz) hedefler için: çevresi ekrandan kırpılıp büyütülür ve yakından tekrar sorulur.
+    ///    Kutusu zaten sıkı olan hedeflere dokunulmaz; kutunun izin verdiğinden büyük atlamalar (başka bir benzer öğeye
+    ///    kayma) reddedilir.
     /// </summary>
-    private async Task RefinePointsAsync(int id, CancellationToken ct, IReadOnlyList<PointMark> pts, CaptureResult cap, Settings s)
+    private async Task ImprovePointsAsync(int id, CancellationToken ct, IReadOnlyList<PointMark> pts, CaptureResult cap, Settings s,
+                                          string context, string answeredBy)
     {
         try
         {
             var sw = Stopwatch.StartNew();
             int W = cap.SourceWidth, H = cap.SourceHeight;
-            int cs = (int)Math.Clamp(W * 0.22, 240, Math.Min(W, H));
-            var origins = new (int x, int y)[pts.Count];
-            var crops = new List<(string, byte[])>();
-            for (int i = 0; i < pts.Count; i++)
+            var current = new List<PointMark>(pts);
+            bool anyChange = false;
+
+            // ---- A) hafif modelin cevabını güçlü modelle doğrula (tam kare)
+            if (answeredBy.Contains("lite", StringComparison.OrdinalIgnoreCase))
             {
-                int cx = (int)(pts[i].X / 1000 * W), cy = (int)(pts[i].Y / 1000 * H);
-                int ox = Math.Clamp(cx - cs / 2, 0, W - cs), oy = Math.Clamp(cy - cs / 2, 0, H - cs);
-                origins[i] = (ox, oy);
-                var jpg = await Task.Run(() => ScreenCapture.CaptureRegionJpeg(cap.ScreenLeft + ox, cap.ScreenTop + oy, cs, 768, 88), ct).ConfigureAwait(false);
-                crops.Add((string.IsNullOrWhiteSpace(pts[i].Label) ? "işaretlenen nesne" : pts[i].Label, jpg));
+                var targets = current.Select(p => (string.IsNullOrWhiteSpace(p.Label) ? "işaretlenen nesne" : p.Label, p.Desc)).ToList();
+                var full = await _gemini.LocateOnFrameAsync(cap.FullJpeg, targets, context, ct).ConfigureAwait(false);
+                if (id != Volatile.Read(ref _session)) return;
+                int moved = 0;
+                double drift = 0;
+                for (int i = 0; i < current.Count; i++)
+                {
+                    var b = full[i];
+                    if (b == null) continue;
+                    double cx = (b[1] + b[3]) / 2, cy = (b[0] + b[2]) / 2;      // 0-1000
+                    double bw = b[3] - b[1], bh = b[2] - b[0];
+                    drift += Math.Sqrt(Math.Pow((cx - current[i].X) / 1000 * W, 2) + Math.Pow((cy - current[i].Y) / 1000 * H, 2));
+                    current[i] = current[i] with { X = cx, Y = cy, W = bw, H = bh };
+                    moved++;
+                }
+                if (moved > 0)
+                {
+                    anyChange = true;
+                    Log.Info($"  İşaret doğrulama (güçlü model, tam kare): {moved}/{current.Count} hedef, ort. kayma {drift / moved:F0}px, {sw.ElapsedMilliseconds}ms");
+                    _overlay.Invoke(_ => _markers.Update(new List<PointMark>(current)));
+                }
+                else Log.Info($"  İşaret doğrulama: güçlü model kullanılamadı ya da hedefi ayırt edemedi; hafif modelin tahmini kaldı ({sw.ElapsedMilliseconds}ms)");
             }
 
-            var boxes = await _gemini.LocateAsync(crops, ct).ConfigureAwait(false);
-            if (id != Volatile.Read(ref _session)) return;
-
-            var updated = new List<PointMark>();
-            int changed = 0;
-            double drift = 0;
-            for (int i = 0; i < pts.Count; i++)
+            // ---- B) belirsiz (büyük kutulu) hedefleri kırpıp yakından sor
+            int cs = (int)Math.Clamp(W * 0.22, 240, Math.Min(W, H));
+            var idx = new List<int>();
+            for (int i = 0; i < current.Count; i++)
             {
-                var p = pts[i];
-                var b = boxes[i];
-                if (b != null)
+                double boxPx = Math.Max(current[i].W / 1000 * W, current[i].H / 1000 * H);
+                if (current[i].W <= 0 || boxPx >= W * 0.045) idx.Add(i);       // kutusu bilinmiyor ya da ~86px+ (1080p): belirsiz
+            }
+            if (idx.Count > 0)
+            {
+                var origins = new (int x, int y)[idx.Count];
+                var crops = new List<(string, string, byte[])>();
+                for (int k = 0; k < idx.Count; k++)
                 {
+                    var p = current[idx[k]];
+                    int cx = (int)(p.X / 1000 * W), cy = (int)(p.Y / 1000 * H);
+                    int ox = Math.Clamp(cx - cs / 2, 0, W - cs), oy = Math.Clamp(cy - cs / 2, 0, H - cs);
+                    origins[k] = (ox, oy);
+                    var jpg = await Task.Run(() => ScreenCapture.CaptureRegionJpeg(cap.ScreenLeft + ox, cap.ScreenTop + oy, cs, 768, 88), ct).ConfigureAwait(false);
+                    crops.Add((string.IsNullOrWhiteSpace(p.Label) ? "işaretlenen nesne" : p.Label, p.Desc, jpg));
+                }
+                var boxes = await _gemini.LocateAsync(crops, context, ct).ConfigureAwait(false);
+                if (id != Volatile.Read(ref _session)) return;
+
+                int changed = 0;
+                double drift = 0;
+                for (int k = 0; k < idx.Count; k++)
+                {
+                    var b = boxes[k];
+                    if (b == null) continue;
+                    var p = current[idx[k]];
                     double bw = (b[3] - b[1]) / 1000 * cs, bh = (b[2] - b[0]) / 1000 * cs;
-                    double px = origins[i].x + (b[1] + b[3]) / 2 / 1000 * cs, py = origins[i].y + (b[0] + b[2]) / 2 / 1000 * cs;
+                    double px = origins[k].x + (b[1] + b[3]) / 2 / 1000 * cs, py = origins[k].y + (b[0] + b[2]) / 2 / 1000 * cs;
                     double dist = Math.Sqrt(Math.Pow(px - p.X / 1000 * W, 2) + Math.Pow(py - p.Y / 1000 * H, 2));
-                    // Kutu kırpmanın neredeyse tamamıysa ya da ilk tahminden çok uzaksa güvenme
-                    if (bw < cs * 0.85 && bh < cs * 0.85 && dist <= cs * 0.5)
+                    double oldBox = Math.Max(p.W / 1000 * W, p.H / 1000 * H);
+                    double maxDrift = Math.Min(cs * 0.5, Math.Max(36, oldBox * 1.3));
+                    // Kutu kırpmanın neredeyse tamamıysa ya da izin verilen kaymadan büyükse (başka bir benzer öğeye atlama) güvenme
+                    if (bw < cs * 0.85 && bh < cs * 0.85 && dist <= maxDrift)
                     {
-                        updated.Add(new PointMark(px / W * 1000, py / H * 1000, p.Label, p.Step, bw / W * 1000, bh / H * 1000));
+                        current[idx[k]] = p with { X = px / W * 1000, Y = py / H * 1000, W = bw / W * 1000, H = bh / H * 1000 };
                         changed++;
                         drift += dist;
-                        continue;
                     }
                 }
-                updated.Add(p);
+                if (changed > 0)
+                {
+                    anyChange = true;
+                    Log.Info($"  İşaret ince ayar: {changed}/{idx.Count} belirsiz hedef, ort. kayma {drift / changed:F0}px, {sw.ElapsedMilliseconds}ms");
+                    if (id == Volatile.Read(ref _session)) _overlay.Invoke(_ => _markers.Update(new List<PointMark>(current)));
+                }
             }
-            Log.Info($"  İşaret ince ayar: {changed}/{pts.Count} hedef, ort. kayma {(changed > 0 ? drift / changed : 0):F0}px, {sw.ElapsedMilliseconds}ms");
-            if (changed > 0 && id == Volatile.Read(ref _session))
-                _overlay.Invoke(_ => _markers.Update(updated));
+            if (!anyChange) Log.Info($"  İşaret iyileştirme: değişiklik yok ({sw.ElapsedMilliseconds}ms)");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (OperationCanceledException) { Log.Warn("İşaret ince ayarı zaman aşımına uğradı; ilk tahmin kaldı"); }
-        catch (Exception ex) { Log.Warn("İşaret ince ayarı yapılamadı: " + ex.Message); }
+        catch (OperationCanceledException) { Log.Warn("İşaret iyileştirme zaman aşımına uğradı; mevcut konum kaldı"); }
+        catch (Exception ex) { Log.Warn("İşaret iyileştirilemedi: " + ex.Message); }
     }
 
     // ------------------------------------------------------------------ Yazılı soru (sohbet paneli)
@@ -497,7 +546,7 @@ internal sealed class Companion
                 if (memOn) SaveExchange(game.GameName, parser, answer, string.IsNullOrWhiteSpace(parser.Question) ? text : parser.Question, s);
                 if (s.ShowModelNotice && result.Notice != null) Ui(p => p.AppendPending("\n\n" + result.Notice));
                 Ui(p => p.EndPending(null));
-                ShowPoints(id, ct, parser, cap, s);
+                ShowPoints(id, ct, parser, cap, s, parser.Question, answer, result.Model);
             }
 
             if (result.Notice != null) Log.Warn("  Uyarı: " + result.Notice);

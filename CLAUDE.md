@@ -109,6 +109,12 @@ src/Ai/LiveTranscriber.cs (v0.3) Gemini Live WebSocket ile konuşurken canlı ya
 src/Ui/MarkerOverlay.cs   (v0.4) "Şuna bas" işaretleri: tıklamayı geçiren küçük katmanlı pencere, nabız halkası + etiket
 ```
 
+v0.6 notları: Kota ücretsiz katmanda model başına GÜNLÜK (gemini-3.8-flash: 20/gün). `GeminiClient.BuildChain` = Model → ModelChain → FallbackModel;
+`BlockModel` günlük kotada Pasifik gece yarısına kadar atlar. `Companion.ImprovePointsAsync`: (A) cevap "lite" modelden geldiyse `LocateOnFrameAsync` ile güçlü model tam karede
+yeniden konumlandırır; (B) yalnızca kutusu ≥ %4,5 genişlik olan hedefleri `LocateAsync` (kırpma) ile inceltir, sapma > max(36px, 1.3×kutu) ise reddeder.
+`@@POINT`: `box`, `label`, `desc`, `basis` ("tahmin" ise atlanır), `style` (ring|arrow). Testler: sağ monitörde (DISPLAY2) sahte oyun penceresi + gerçek uygulama; oyun sol monitörde, ona dokunma.
+Ölçüm sonuçları: gerçek yetenek ağacında hafif model 130–370 px şaşarken 3.5-flash / 3-flash-preview 3–23 px.
+
 v0.5 notları: `HistoryPanel` iki görünümlü (Sohbet / Ayarlar). Sohbet kronolojik (en yeni altta, `_stick` ile alta yapışık).
 Ayar satırları `BuildRows` içinde; tıklayınca canlı `Settings` nesnesi değişir, `Save()` yazar, `SettingsChanged` kancası `Program.ApplyLoaded`'i çağırır.
 İşaret: `@@POINT {"box":[ymin,xmin,ymax,xmax],...}` (0–1000, tam kareye göre) → `MarkerOverlay.Show`; sonra `Companion.RefinePointsAsync`

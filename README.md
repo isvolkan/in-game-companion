@@ -1,4 +1,4 @@
-# Oyun Asistanı (In-Game AI Companion) — v0.5.0
+# Oyun Asistanı (In-Game AI Companion) — v0.6.0
 
 Oyunu durdurmadan sesli soru sor, cevap sağ üst köşede şeffaf bir kutuda aksın.
 İlk hedef oyun: **Crimson Desert**. The Witcher 3, BG3, Elden Ring ve Cyberpunk için de ayar hazır.
@@ -65,13 +65,22 @@ Sesli sorular için `AnswerLength`, yazılı sohbet için `TypedAnswerLength` ay
 
 ## Ekranda işaret
 
-Model bir şeyin yerini söylerken ekranda AÇIKÇA görüyorsa, cevabın sonuna gizli bir `@@POINT {"x":..,"y":..,"label":..,"step":..}`
-satırı ekler (0–1000 ölçeğinde, tam kareye göre). Uygulama bunu ekran pikseline çevirip oyunun üstüne halka çizer.
+Model bir şeyin yerini söylerken ekranda AÇIKÇA görüyorsa, cevabın sonuna gizli bir
+`@@POINT {"box":[ymin,xmin,ymax,xmax],"label":..,"desc":..,"basis":..,"style":"ring|arrow","step":..}` satırı ekler
+(0–1000 ölçeğinde, tam kareye göre). Uygulama bunu ekran pikseline çevirip oyunun üstüne çizer.
 İşaretler tıklamayı geçirir, odağı çalmaz ve ekran görüntülerine girmez. Ayarlar: `PointerMarkers` (aç/kapat), `MarkerSeconds` (kalma süresi).
-Konumu iki adımda bulur: (1) cevapla birlikte modelin verdiği **sınırlayıcı kutu** halkayı hemen çizer; (2) `PointerRefine` açıksa hedefin çevresi
-ekrandan kırpılıp büyütülür ve model bir kez daha, yakından bakar (tek toplu istek, hafif model `PointerRefineModel`). Halka yeni konuma yumuşakça kayar.
-Gerçek bir harita ekranında ilk tahmin küçük bir simgede 100 piksele kadar şaşabilirken ince ayardan sonra 1–5 piksele indi.
-Halkanın boyu hedefin kutusuna uyar. Hedef ekranda değilse (kapalı menü gibi) işaret çıkmaz, cevap yazıyla anlatır.
+
+- **Halka (`ring`)**: küçük, ayrık öğeler için (düğme, simge, sekme, tek düğüm). Boyu hedefin kutusuna uyar.
+- **Ok (`arrow`)**: geniş alanlar, haritada bir yer, dünyadaki nesne ya da halkanın komşuları örteceği kalabalık yerler için. Kalın, hafifçe sallanan bir ok;
+  yönü ekrana sığacak ve diğer işaretlerin üstüne düşmeyecek şekilde kendiliğinden seçilir. Modelin kendisi stili seçer.
+- **Kesinlik**: Adları görünmeyen benzer simgelerde (yetenek ağacı, harita simgeleri) model hangisi olduğunu ancak ad, seçili/vurgulu olma ya da
+  ayırt edici özellikle bilebilir. `basis: "tahmin"` olan işaretler hiç gösterilmez; yanlış yeri göstermek göstermemekten kötüdür.
+
+Konum doğruluğu (gerçek 1080p ekranlarda ölçüldü):
+- Güçlü modeller (`gemini-3.8-flash`, `3.5-flash`, `3-flash-preview`) yoğun bir yetenek ağacında bile hedefi 3–10 piksel içinde gösterir.
+- Hafif model (`gemini-3.5-flash-lite`) yoğun ekranlarda başka bir benzer düğümü seçebilir (100+ piksel). Cevabı hafif model verdiyse işaretler
+  otomatik olarak **güçlü bir modelle tam ekranda doğrulanır** (`PointerRefine`, +1 istek); halka doğru yere yumuşakça kayar.
+- Kutusu büyük (belirsiz) hedefler kırpılıp yakından yeniden sorulur; başka bir benzer öğeye atlama olarak görünen büyük kaymalar reddedilir.
 
 ## Mimari kararlar
 
@@ -110,10 +119,13 @@ Her sorgu `logs\companion-YYYYMMDD.log` dosyasına yazılır: yakalama süresi, 
 
 ## Ücretsiz katman ve kota
 
-Ücretsiz Gemini anahtarında `gemini-3.8-flash` için istek sınırı düşüktür (429 mesajında `limit: 20` yazar) ve sık "yoğun talep" (503) verir.
-Uygulama bu durumda önce aynı modeli bir kez daha dener, olmazsa `FallbackModel`'e (`gemini-3.5-flash-lite`) geçer; kotası dolan modeli
-yanıttaki bekleme süresi kadar atlar. Kutuda uyarı görmek istersen `ShowModelNotice: true` yap (log'a her zaman yazılır).
-Her işaret ince ayarı ve yazılı/sesli soru ayrı bir istektir; denemeler kotayı hızlı harcayabilir.
+Ücretsiz Gemini anahtarında kota **model başına ve günlüktür**: `gemini-3.8-flash` için günde yalnızca **20 istek**
+(`GenerateRequestsPerDayPerProjectPerModel-FreeTier`), üstelik sık "yoğun talep" (503) verir. Her soru 1 istek, işaret doğrulama +1 istektir.
+
+Bu yüzden uygulama bir **model zinciri** kullanır: `Model` → `ModelChain` (varsayılan: `gemini-3.5-flash`, `gemini-3-flash-preview`,
+`gemini-3.7-flash`, `gemini-3.6-flash`) → `FallbackModel` (`gemini-3.5-flash-lite`). Kotası biten model, günlük sıfırlanmaya kadar (Pasifik saatiyle
+gece yarısı) atlanır; 503 veren ya da 14 saniyede yanıt başlığı göndermeyen model 45 sn dinlendirilir. Kutuda uyarı görmek istersen
+`ShowModelNotice: true` yap (log'a her zaman yazılır). Ayarlar ekranından ana modeli değiştirebilirsin.
 
 ## Bilinen sınırlar (v0.1)
 
