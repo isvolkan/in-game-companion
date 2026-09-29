@@ -34,6 +34,8 @@ internal sealed class MarkerOverlay : IDisposable
         public string Label = "";
         public int Step;
         public bool Arrow;              // true: halka yerine ok
+        public bool Uncertain;          // doğrulanamadı: kesik çizgili, soluk, "≈" etiketli
+        public bool Hidden;             // doğrulanamadı ve yalnızca görünüşe dayanıyor: hiç gösterilmez
         public double DX, DY;           // ok yönü: hedeften dışarı doğru birim vektör (okun kuyruğu bu tarafta)
     }
 
@@ -128,7 +130,7 @@ internal sealed class MarkerOverlay : IDisposable
         {
             var (x, y, r) = ToScreen(p);
             marks.Add(new Mark { X = x, Y = y, R = r, TX = x, TY = y, TR = r, Label = p.Label, Step = p.Step,
-                                 Arrow = p.Style == "arrow" });
+                                 Arrow = p.Style == "arrow", Uncertain = p.Uncertain });
         }
         _marks = marks;
         AssignDirections();
@@ -158,7 +160,10 @@ internal sealed class MarkerOverlay : IDisposable
         {
             var (x, y, r) = ToScreen(points[i]);
             _marks[i].TX = x; _marks[i].TY = y; _marks[i].TR = r;
+            _marks[i].Uncertain = points[i].Uncertain;
+            _marks[i].Hidden = points[i].Hidden;
         }
+        if (_marks.TrueForAll(m => m.Hidden)) { Hide(); return; }
         AssignDirections();
         Log.Info("İşaret güncellendi: " + string.Join(" → ", _marks.ConvertAll(m => $"{m.Step}:{m.Label}@{m.TX:F0},{m.TY:F0}")));
     }
@@ -203,7 +208,7 @@ internal sealed class MarkerOverlay : IDisposable
         float s = (float)_scale;
         foreach (var m in _marks)
         {
-            if (!m.Arrow) continue;
+            if (!m.Arrow || m.Hidden) continue;
             double reach = m.TR + (6 + 54 + 40) * s;              // hedeften kuyruk ucu + etiket payı
             double labelReach = string.IsNullOrEmpty(m.Label) ? 0 : 150 * s;
             (double x, double y) chosen = ArrowDirs[0];
@@ -305,7 +310,8 @@ internal sealed class MarkerOverlay : IDisposable
         for (int i = 0; i < _marks.Count; i++)
         {
             var m = _marks[i];
-            labelW[i] = string.IsNullOrEmpty(m.Label) ? 0 : _text.Measure(f.SmallBold, m.Label) + padX * 2;
+            if (m.Hidden) continue;
+            labelW[i] = string.IsNullOrEmpty(m.Label) ? 0 : _text.Measure(f.SmallBold, LabelOf(m)) + padX * 2;
             float ext = m.Arrow ? (float)Math.Max(m.R, m.TR) + 190 * s : (float)Math.Max(m.R, m.TR) * 2;
             foreach (var (px, py) in new[] { (m.X, m.Y), (m.TX, m.TY) })
             {
@@ -330,6 +336,7 @@ internal sealed class MarkerOverlay : IDisposable
         for (int i = 0; i < _marks.Count; i++)
         {
             var m = _marks[i];
+            if (m.Hidden) continue;
             float R = (float)m.R;
             float cx = (float)(m.X - minX), cy = (float)(m.Y - minY);
 
@@ -339,12 +346,13 @@ internal sealed class MarkerOverlay : IDisposable
                 continue;
             }
 
-            // Genişleyip sönen dış halka
+            // Genişleyip sönen dış halka (belirsiz işarette yok: dikkat çekmesin)
             float r2 = R * (1f + (float)phase * 0.6f);
-            DrawRing(cx, cy, r2, 3 * s, Argb((int)((1 - phase) * 210), accent), Argb((int)((1 - phase) * 90), 0x000000), 5 * s);
+            if (!m.Uncertain)
+                DrawRing(cx, cy, r2, 3 * s, Argb((int)((1 - phase) * 210), accent), Argb((int)((1 - phase) * 90), 0x000000), 5 * s);
             // Ana halka (nabız)
             float r1 = R * (0.9f + 0.1f * (float)pulse);
-            DrawRing(cx, cy, r1, 4 * s, Argb(255, accent), Argb(170, 0x000000), 7.5f * s);
+            DrawRing(cx, cy, r1, 4 * s, Argb(m.Uncertain ? 160 : 255, accent), Argb(m.Uncertain ? 110 : 170, 0x000000), 7.5f * s, dashed: m.Uncertain);
 
             // Adım rozeti (halkanın sol üstünde)
             if (_numbered)
@@ -364,7 +372,7 @@ internal sealed class MarkerOverlay : IDisposable
                 if (lx + labelW[i] > W) lx = cx - r1 - 6 * s - labelW[i];
                 float ly = cy - lh / 2;
                 FillRoundRect(lx, ly, labelW[i], lh, lh / 2, Argb(225, 0x0D1015));
-                _ops.Add(new TextRenderer.Op { Text = m.Label, X = lx + padX, Y = ly + padY, Font = f.SmallBold, Color = 0xFFFFFFFF, LineHeight = f.SmallLine });
+                _ops.Add(new TextRenderer.Op { Text = LabelOf(m), X = lx + padX, Y = ly + padY, Font = f.SmallBold, Color = 0xFFFFFFFF, LineHeight = f.SmallLine });
             }
         }
         _text.Draw(_g, _ops, float.MaxValue);
@@ -415,7 +423,7 @@ internal sealed class MarkerOverlay : IDisposable
         Gdip.GdipSetPenLineJoin(dark, 2);
         Gdip.GdipDrawPolygon(_g, dark, pts, pts.Length);
         Gdip.GdipDeletePen(dark);
-        Gdip.GdipCreateSolidFill(Argb(255, accent), out var fill);
+        Gdip.GdipCreateSolidFill(Argb(m.Uncertain ? 165 : 255, accent), out var fill);
         Gdip.GdipFillPolygon(_g, fill, pts, pts.Length, 0);
         Gdip.GdipDeleteBrush(fill);
         Gdip.GdipCreatePen1(Argb(230, 0xFFFFFF), Math.Max(1.2f, 1.6f * s), 2, out var light);
@@ -439,17 +447,20 @@ internal sealed class MarkerOverlay : IDisposable
             float lh = f.SmallLine + padY * 2;
             float lcx = ex + dx * 8 * s + dx * labelW / 2, lcy = ey + dy * 8 * s + dy * lh / 2;
             FillRoundRect(lcx - labelW / 2, lcy - lh / 2, labelW, lh, lh / 2, Argb(230, 0x0D1015));
-            _ops.Add(new TextRenderer.Op { Text = m.Label, X = lcx - labelW / 2 + padX, Y = lcy - lh / 2 + padY, Font = f.SmallBold, Color = 0xFFFFFFFF, LineHeight = f.SmallLine });
+            _ops.Add(new TextRenderer.Op { Text = LabelOf(m), X = lcx - labelW / 2 + padX, Y = lcy - lh / 2 + padY, Font = f.SmallBold, Color = 0xFFFFFFFF, LineHeight = f.SmallLine });
         }
     }
 
     /// <summary>Koyu gölgeli halka (her arka planda okunsun diye önce geniş koyu, sonra renkli çizgi).</summary>
-    private void DrawRing(float cx, float cy, float r, float width, uint color, uint shadow, float shadowWidth)
+    private static string LabelOf(Mark m) => m.Uncertain ? "≈ " + m.Label : m.Label;
+
+    private void DrawRing(float cx, float cy, float r, float width, uint color, uint shadow, float shadowWidth, bool dashed = false)
     {
         Gdip.GdipCreatePen1(shadow, shadowWidth, 2, out var p0);
         Gdip.GdipDrawEllipse(_g, p0, cx - r, cy - r, r * 2, r * 2);
         Gdip.GdipDeletePen(p0);
         Gdip.GdipCreatePen1(color, width, 2, out var p1);
+        if (dashed) Gdip.GdipSetPenDashStyle(p1, 1);
         Gdip.GdipDrawEllipse(_g, p1, cx - r, cy - r, r * 2, r * 2);
         Gdip.GdipDeletePen(p1);
     }

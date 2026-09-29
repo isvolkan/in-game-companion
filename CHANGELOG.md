@@ -2,6 +2,15 @@
 
 Her sürüm GitHub'da `vX.Y.Z` etiketiyle (tag) işaretlenir.
 
+## v0.6.1 — 29.09.2026
+- **Uydurma yasağı:** Yetenek ağacı gibi adsız simgelerde model artık düğümlere kendi bilgisinden isim yapıştırmıyor
+  ("Işığı Yansıt sol alttaki yeşil düğümdür" gibi). Adı ekranda olmayan bir yetenek sorulunca işaret koymuyor ve "imleci düğümün üstüne getir, adı sağ panelde çıkar" diyor.
+  Panelde açık olan yeteneğin ağaçtaki vurgulu karşılığı tarif edildi.
+- **`basis` sıkılaştırıldı:** `ad` / `seçili` / `soru`; `özellik` ve `tahmin` gerekçeli işaretler gösterilmiyor.
+- **Doğrulanamayan işaret:** Cevap hafif modelden geldi ve güçlü model doğrulaması yapılamadıysa, adı yazan hedefler "≈ tahmini" (kesik çizgili) gösterilir;
+  yalnızca görünüşe dayananlar gizlenir. (Ölçüm: hafif modeller yoğun ekranlarda 200–650 px şaşıyor; koordinat cetveli/ızgara da yardımcı olmadı.)
+- Test: tüm ağaç düğümlerini saydırma — güçlü model 45, hafif model 46 düğümü doğru yerlerde buldu (soluk/kilitli 4–5 düğüm kaçtı); adları ekranda olmadığı için boş döndü.
+
 ## v0.6.0 — 29.09.2026
 - **Ok işareti:** Halkanın yanında, modelin duruma göre seçtiği kalın ok stili (`style: "arrow"`). Yön ekrana sığacak ve diğer işaretlerle çakışmayacak şekilde otomatik seçilir; sallanır, etiketi ve adım rozeti var.
 - **Yoğun ekranlarda doğru düğüm:** Yetenek ağacı gibi adsız simgelerden oluşan ekranlarda hafif model başka bir düğümü gösterebiliyordu (100–370 px).

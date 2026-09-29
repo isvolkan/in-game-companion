@@ -383,27 +383,39 @@ internal sealed class Companion
             if (answeredBy.Contains("lite", StringComparison.OrdinalIgnoreCase))
             {
                 var targets = current.Select(p => (string.IsNullOrWhiteSpace(p.Label) ? "işaretlenen nesne" : p.Label, p.Desc)).ToList();
-                var full = await _gemini.LocateOnFrameAsync(cap.FullJpeg, targets, context, ct).ConfigureAwait(false);
+                double[]?[] full;
+                try { full = await _gemini.LocateOnFrameAsync(cap.FullJpeg, targets, context, ct).ConfigureAwait(false); }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    Log.Warn("İşaret doğrulama sorgusu başarısız: " + ex.Message.Split((char)10)[0]);
+                    full = new double[current.Count][];
+                }
                 if (id != Volatile.Read(ref _session)) return;
-                int moved = 0;
+                int moved = 0, hidden = 0;
                 double drift = 0;
                 for (int i = 0; i < current.Count; i++)
                 {
                     var b = full[i];
-                    if (b == null) continue;
+                    if (b == null)
+                    {
+                        // Güçlü model kullanılamadı ya da hedefi ayırt edemedi: hafif modelin tahmini doğrulanamadı.
+                        // Adı ekranda yazan hedef ("ad") "tahmini" gösterilir; yalnızca görünüşe/seçime dayananlar (ör. adsız ağaç
+                        // düğümleri) hiç gösterilmez: hafif model bunlarda yüzlerce piksel şaşıyor, yanlış yer göstermek göstermemekten kötü.
+                        if (current[i].Basis == "ad") current[i] = current[i] with { Uncertain = true };
+                        else { current[i] = current[i] with { Hidden = true }; hidden++; }
+                        continue;
+                    }
                     double cx = (b[1] + b[3]) / 2, cy = (b[0] + b[2]) / 2;      // 0-1000
                     double bw = b[3] - b[1], bh = b[2] - b[0];
                     drift += Math.Sqrt(Math.Pow((cx - current[i].X) / 1000 * W, 2) + Math.Pow((cy - current[i].Y) / 1000 * H, 2));
                     current[i] = current[i] with { X = cx, Y = cy, W = bw, H = bh };
                     moved++;
                 }
-                if (moved > 0)
-                {
-                    anyChange = true;
-                    Log.Info($"  İşaret doğrulama (güçlü model, tam kare): {moved}/{current.Count} hedef, ort. kayma {drift / moved:F0}px, {sw.ElapsedMilliseconds}ms");
-                    _overlay.Invoke(_ => _markers.Update(new List<PointMark>(current)));
-                }
-                else Log.Info($"  İşaret doğrulama: güçlü model kullanılamadı ya da hedefi ayırt edemedi; hafif modelin tahmini kaldı ({sw.ElapsedMilliseconds}ms)");
+                anyChange = true;
+                Log.Info($"  İşaret doğrulama (güçlü model, tam kare): {moved}/{current.Count} hedef doğrulandı" +
+                         (moved > 0 ? $", ort. kayma {drift / moved:F0}px" : "; güçlü model yok/ayırt edemedi") +
+                         (hidden > 0 ? $"; {hidden} işaret doğrulanamadığı için gizlendi" : "") + $", {sw.ElapsedMilliseconds}ms");
+                _overlay.Invoke(_ => _markers.Update(new List<PointMark>(current)));
             }
 
             // ---- B) belirsiz (büyük kutulu) hedefleri kırpıp yakından sor
@@ -412,6 +424,7 @@ internal sealed class Companion
             for (int i = 0; i < current.Count; i++)
             {
                 double boxPx = Math.Max(current[i].W / 1000 * W, current[i].H / 1000 * H);
+                if (current[i].Uncertain || current[i].Hidden) continue;                              // doğrulanamadı: kırpmayla "düzeltmeye" çalışma
                 if (current[i].W <= 0 || boxPx >= W * 0.045) idx.Add(i);       // kutusu bilinmiyor ya da ~86px+ (1080p): belirsiz
             }
             if (idx.Count > 0)

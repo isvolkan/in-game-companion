@@ -1,4 +1,4 @@
-# Oyun Asistanı (In-Game AI Companion) — v0.6.0
+# Oyun Asistanı (In-Game AI Companion) — v0.6.1
 
 Oyunu durdurmadan sesli soru sor, cevap sağ üst köşede şeffaf bir kutuda aksın.
 İlk hedef oyun: **Crimson Desert**. The Witcher 3, BG3, Elden Ring ve Cyberpunk için de ayar hazır.
@@ -73,8 +73,12 @@ Model bir şeyin yerini söylerken ekranda AÇIKÇA görüyorsa, cevabın sonuna
 - **Halka (`ring`)**: küçük, ayrık öğeler için (düğme, simge, sekme, tek düğüm). Boyu hedefin kutusuna uyar.
 - **Ok (`arrow`)**: geniş alanlar, haritada bir yer, dünyadaki nesne ya da halkanın komşuları örteceği kalabalık yerler için. Kalın, hafifçe sallanan bir ok;
   yönü ekrana sığacak ve diğer işaretlerin üstüne düşmeyecek şekilde kendiliğinden seçilir. Modelin kendisi stili seçer.
-- **Kesinlik**: Adları görünmeyen benzer simgelerde (yetenek ağacı, harita simgeleri) model hangisi olduğunu ancak ad, seçili/vurgulu olma ya da
-  ayırt edici özellikle bilebilir. `basis: "tahmin"` olan işaretler hiç gösterilmez; yanlış yeri göstermek göstermemekten kötüdür.
+- **Kesinlik (uydurma yasağı)**: Yetenek ağacı gibi yerlerde düğümlerin çoğunun **adı ekranda yazmaz**; ad yalnızca seçili düğümün sağ panelinde görünür.
+  Model, adı görünmeyen bir öğeye kendi bilgisinden isim yapıştırmaz: "X yeteneği nerede?" diye sorulduğunda X'in adı ekranda yoksa işaret koymaz ve
+  "imleci düğümün üstüne getir, adı sağ panelde çıkar" der. İşaretin dayanağı (`basis`): `ad` (adı yazıyor), `seçili` (paneldeki öğenin vurgulu karşılığı),
+  `soru` (sorudaki renk/şekil/konum tarifine uyuyor). `tahmin` ya da `özellik` gerekçeli işaretler hiç gösterilmez.
+- **Doğrulanamayan işaret**: Cevabı hafif model verdiyse ve güçlü model kotası yüzünden doğrulama yapılamadıysa: adı ekranda yazan hedefler kesik çizgili,
+  soluk, `≈` etiketli **tahmini** halka olarak gösterilir; yalnızca görünüşe dayananlar (ör. adsız ağaç düğümü) hiç gösterilmez.
 
 Konum doğruluğu (gerçek 1080p ekranlarda ölçüldü):
 - Güçlü modeller (`gemini-3.8-flash`, `3.5-flash`, `3-flash-preview`) yoğun bir yetenek ağacında bile hedefi 3–10 piksel içinde gösterir.
