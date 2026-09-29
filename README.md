@@ -1,4 +1,4 @@
-# Oyun Asistanı (In-Game AI Companion) — v0.3.0
+# Oyun Asistanı (In-Game AI Companion) — v0.4.0
 
 Oyunu durdurmadan sesli soru sor, cevap sağ üst köşede şeffaf bir kutuda aksın.
 İlk hedef oyun: **Crimson Desert**. The Witcher 3, BG3, Elden Ring ve Cyberpunk için de ayar hazır.
@@ -17,7 +17,8 @@ Oyunu durdurmadan sesli soru sor, cevap sağ üst köşede şeffaf bir kutuda ak
 |---|---|
 | **Mouse 5**'i basılı tut → konuş → bırak | Ekran + ses gönderilir, cevap akar |
 | Mouse 5'e **kısa dokun** (<0,35 sn) | Kutuyu kapatır, süren isteği iptal eder |
-| Mouse 5'e **çift dokun** | Önceki sorular paneli açılır: tıkla → cevabı aç/kapat, tekerlek → kaydır. Esc, Mouse 5 ya da dışarı tıklama kapatır |
+| Mouse 5'e **çift dokun** | Sohbet paneli açılır: altındaki kutuya **yazıp Enter'a basarak** soru sorabilirsin. Üstte önceki sorular: tıkla → cevabı aç/kapat, tekerlek → kaydır. Esc, Mouse 5 ya da dışarı tıklama kapatır |
+| "Haritayı nerede açarım?", "önce envantere, sonra haritaya bas" | Model hedefi ekranda görürse üstüne **nabız gibi atan halka + etiket** çizer (çok adımlıysa numaralı). Mouse 5'e dokunmak ya da yeni soru kapatır |
 | Konuşurken | Söylediklerin kutuda canlı yazı olarak görünür (`LiveTranscription`) |
 | Cevap akarken yeniden basılı tut | Eski istek iptal olur, yeni soru başlar |
 | Devam sorusu ("peki o nerede?") | Son 4 soru-cevap 20 dakika bağlam olarak gönderilir |
@@ -47,6 +48,26 @@ Nasıl çalışıyor: Model cevabın sonuna gizli bir `@@MEM {...}` satırı ekl
 
 Tepsi menüsünden **Hafıza klasörünü aç** ve **Son oyunun hafızasını sil…** seçeneklerine ulaşabilirsin.
 Dosyalar düz JSON'dur; istersen elle düzenleyebilirsin.
+
+## Cevap uzunluğu
+
+Sesli sorular için `AnswerLength`, yazılı sohbet için `TypedAnswerLength` ayarı var:
+
+| Değer | Sınır | Nerede işe yarar |
+|---|---|---|
+| `Short` | en fazla 3 madde, ~70 kelime | oyun sırasında sesli soru (varsayılan) |
+| `Normal` | ~150 kelime, en fazla 6 madde | biraz daha açıklama |
+| `Detailed` | ~400 kelime, adım adım anlatım | sohbet paneli (varsayılan) |
+
+`AnswerMaxWords` sıfırdan büyükse kelime sınırını elle belirler. Cevap HUD kutusuna sığmazsa kutunun altında
+"Tamamı için Mouse 5'e çift dokun" yazar; tam metin sohbet panelindeki geçmişte durur. Kısa dışı modlarda kutu daha uzun (en çok 60 sn) kalır.
+
+## Ekranda işaret
+
+Model bir şeyin yerini söylerken ekranda AÇIKÇA görüyorsa, cevabın sonuna gizli bir `@@POINT {"x":..,"y":..,"label":..,"step":..}`
+satırı ekler (0–1000 ölçeğinde, tam kareye göre). Uygulama bunu ekran pikseline çevirip oyunun üstüne halka çizer.
+İşaretler tıklamayı geçirir, odağı çalmaz ve ekran görüntülerine girmez. Ayarlar: `PointerMarkers` (aç/kapat), `MarkerSeconds` (kalma süresi).
+Konum modelin tahminidir; birkaç on piksel kayabilir, bu yüzden halka geniş tutuldu. Hedef ekranda değilse (kapalı menü gibi) işaret çıkmaz, cevap yazıyla anlatır.
 
 ## Mimari kararlar
 

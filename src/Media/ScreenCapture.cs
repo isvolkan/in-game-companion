@@ -13,7 +13,9 @@ internal sealed record CaptureResult(
     int SourceWidth,
     int SourceHeight,
     bool FocusFromCursor,
-    long ElapsedMs);
+    long ElapsedMs,
+    int ScreenLeft = 0,
+    int ScreenTop = 0);
 
 /// <summary>
 /// Oyun penceresinin anlık görüntüsünü alır (Borderless Windowed'da DWM kompozisyonundan BitBlt).
@@ -22,7 +24,8 @@ internal sealed record CaptureResult(
 /// </summary>
 internal static class ScreenCapture
 {
-    public static CaptureResult Capture(IntPtr gameHwnd, CaptureSettings cfg)
+    /// <param name="includeFocus">false: odak kırpması alınmaz (imleç panelde olduğu yazılı sorularda anlamsız).</param>
+    public static CaptureResult Capture(IntPtr gameHwnd, CaptureSettings cfg, bool includeFocus = true)
     {
         var sw = Stopwatch.StartNew();
         var rect = GetCaptureRect(gameHwnd);
@@ -50,7 +53,7 @@ internal static class ScreenCapture
             // 2) Odak kırpması
             byte[]? focusJpeg = null;
             bool fromCursor = false;
-            if (cfg.FocusCropSize > 0 && (w > cfg.FocusCropSize || h > cfg.FocusCropSize))
+            if (includeFocus && cfg.FocusCropSize > 0 && (w > cfg.FocusCropSize || h > cfg.FocusCropSize))
             {
                 var (fx, fy, cursor) = GetFocusPoint(rect);
                 fromCursor = cursor;
@@ -65,7 +68,7 @@ internal static class ScreenCapture
 
             sw.Stop();
             if (cfg.SaveDebugCaptures) SaveDebug(fullJpeg, focusJpeg);
-            return new CaptureResult(fullJpeg, focusJpeg, w, h, fromCursor, sw.ElapsedMilliseconds);
+            return new CaptureResult(fullJpeg, focusJpeg, w, h, fromCursor, sw.ElapsedMilliseconds, rect.Left, rect.Top);
         }
         finally
         {

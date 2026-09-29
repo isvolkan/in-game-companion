@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Text.Json.Nodes;
 
@@ -11,9 +13,13 @@ namespace InGameCompanion.Ai;
 ///   "@@MEM {json}"      → son satır, hafıza güncellemesi (HUD'da asla gösterilmez)
 /// İşaretçinin parçalar hâlinde gelebileceği durumlar için kuyruk tutulur.
 /// </summary>
+/// <summary>Ekranda gösterilecek bir nokta: x,y 0-1000 ölçeğinde (Görüntü 1'e göre).</summary>
+internal sealed record PointMark(double X, double Y, string Label, int Step);
+
 internal sealed class ResponseParser
 {
-    public const string MetaMarker = "@@MEM";
+    /// <summary>"@@MEM {...}" ve "@@POINT {...}" satırlarının ortak öneki; cevap metninde asla geçmez.</summary>
+    public const string MetaMarker = "@@";
 
     private readonly StringBuilder _head = new();
     private bool _headDone;
@@ -27,6 +33,18 @@ internal sealed class ResponseParser
 
     public event Action<string>? QuestionParsed;
     public event Action<string>? AnswerDelta;
+
+    /// <summary>Yeniden deneme öncesi: o ana kadar ayrıştırılan her şeyi at.</summary>
+    public void Reset()
+    {
+        _head.Clear();
+        _headDone = false;
+        _tail = "";
+        _inMeta = false;
+        _meta.Clear();
+        Question = "";
+        Answer.Clear();
+    }
 
     public void Feed(string chunk)
     {
@@ -84,11 +102,55 @@ internal sealed class ResponseParser
     /// <summary>@@MEM satırındaki JSON nesnesi (yoksa ya da bozuksa null).</summary>
     public JsonObject? ParseMeta()
     {
-        var raw = _meta.ToString();
-        int a = raw.IndexOf('{'), b = raw.LastIndexOf('}');
+        foreach (var line in MetaLines("@@MEM"))
+            if (ParseJson(line) is JsonObject o) return o;
+        return null;
+    }
+
+    /// <summary>@@POINT satırları (adım sırasına göre, en fazla 4; geçersiz olanlar atlanır).</summary>
+    public IReadOnlyList<PointMark> ParsePoints()
+    {
+        var list = new List<PointMark>();
+        foreach (var line in MetaLines("@@POINT"))
+        {
+            if (ParseJson(line) is not JsonObject o) continue;
+            if (!TryNum(o["x"], out var x) || !TryNum(o["y"], out var y)) continue;
+            if (x < 0 || x > 1000 || y < 0 || y > 1000) continue;
+            string label = "";
+            try { label = (o["label"]?.GetValue<string>() ?? "").Trim(); } catch { }
+            if (label.Length > 40) label = label[..40];
+            int step = list.Count + 1;
+            if (TryNum(o["step"], out var st) && st >= 1 && st <= 99) step = (int)st;
+            list.Add(new PointMark(x, y, label, step));
+        }
+        return list.OrderBy(p => p.Step).Take(4).ToList();
+    }
+
+    private IEnumerable<string> MetaLines(string prefix)
+    {
+        foreach (var raw in _meta.ToString().Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.StartsWith(prefix, StringComparison.Ordinal)) yield return line;
+        }
+    }
+
+    private static JsonNode? ParseJson(string line)
+    {
+        int a = line.IndexOf('{'), b = line.LastIndexOf('}');
         if (a < 0 || b <= a) return null;
-        try { return JsonNode.Parse(raw[a..(b + 1)]) as JsonObject; }
+        try { return JsonNode.Parse(line[a..(b + 1)]); }
         catch { return null; }
+    }
+
+    private static bool TryNum(JsonNode? n, out double v)
+    {
+        v = 0;
+        if (n == null) return false;
+        try { v = n.GetValue<double>(); return !double.IsNaN(v); } catch { }
+        try { return double.TryParse(n.GetValue<string>(), System.Globalization.NumberStyles.Float,
+                                     System.Globalization.CultureInfo.InvariantCulture, out v); }
+        catch { return false; }
     }
 
     private void ProcessAnswer(string s)
@@ -100,7 +162,7 @@ internal sealed class ResponseParser
         if (idx >= 0)
         {
             Emit(_tail[..idx].TrimEnd());
-            _meta.Append(_tail[(idx + MetaMarker.Length)..]);
+            _meta.Append(_tail[idx..]);
             _tail = "";
             _inMeta = true;
             return;

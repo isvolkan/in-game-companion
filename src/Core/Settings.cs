@@ -72,6 +72,18 @@ internal sealed class Settings
     public bool LiveTranscription { get; set; } = true;
     public string LiveTranscriptionModel { get; set; } = "gemini-3.5-transcribe-live";
     public int MaxOutputTokens { get; set; } = 4096;
+
+    /// <summary>Sesli sorularda cevap uzunluğu: Short (en fazla 3 madde, ~70 kelime) | Normal (~150) | Detailed (~400).</summary>
+    public string AnswerLength { get; set; } = "Short";
+    /// <summary>Yazılı sohbette cevap uzunluğu (panelde kaydırılabildiği için uzun olabilir). Short | Normal | Detailed.</summary>
+    public string TypedAnswerLength { get; set; } = "Detailed";
+    /// <summary>0 = seçili seviyenin varsayılanı; &gt;0 ise kelime sınırını elle belirler.</summary>
+    public int AnswerMaxWords { get; set; } = 0;
+
+    /// <summary>Model bir şeyin yerini gösterirse ekranda işaret çizilir ("şuna bas").</summary>
+    public bool PointerMarkers { get; set; } = true;
+    /// <summary>İşaretlerin ekranda kalma süresi (sn). Mouse 5'e dokunmak ya da yeni soru hemen kapatır.</summary>
+    public double MarkerSeconds { get; set; } = 14;
     public int RequestTimeoutSeconds { get; set; } = 45;
 
     /// <summary>XButton2 (Mouse 5) | XButton1 (Mouse 4) | Middle</summary>
@@ -148,7 +160,8 @@ internal sealed class Settings
         // Yeni sürümde eklenen ayarlar dosyada görünsün
         if (!text.Contains("\"Memory\"", StringComparison.OrdinalIgnoreCase) ||
             !text.Contains("\"FallbackModel\"", StringComparison.OrdinalIgnoreCase) ||
-            !text.Contains("\"LiveTranscription\"", StringComparison.OrdinalIgnoreCase))
+            !text.Contains("\"LiveTranscription\"", StringComparison.OrdinalIgnoreCase) ||
+            !text.Contains("\"AnswerLength\"", StringComparison.OrdinalIgnoreCase))
         {
             try { loaded.Save(); } catch { }
         }

@@ -7,8 +7,24 @@ namespace InGameCompanion.Ai;
 /// <summary>Sistem talimatı ve her soruya eklenen bağlam metni.</summary>
 internal static class Prompt
 {
-    public static string BuildSystem(Settings s, GameContext game, string? manualProgress, string? autoProgress, string? memoryBlock)
+    /// <summary>Seviye adı + kelime sınırı → modele verilecek uzunluk/biçim kuralı.</summary>
+    public static string LengthRule(string? level, int customWords)
     {
+        var lv = (level ?? "").Trim().ToLowerInvariant();
+        int words = lv switch { "detailed" or "long" or "uzun" => 400, "normal" or "medium" or "orta" => 150, _ => 70 };
+        bool isShort = words == 70;
+        if (customWords > 0) { words = customWords; isShort = words <= 90; }
+        if (isShort)
+            return $"En fazla 3 kısa madde (\"- \" ile) VEYA 2-3 cümlelik tek paragraf. Toplam ~{words} kelimeyi aşma. Sıralı adımlar gerekiyorsa \"1.\" \"2.\" kullanabilirsin (en fazla 4 adım).";
+        if (words <= 200)
+            return $"Kısa paragraflar ve/veya en fazla 6 madde. Toplam ~{words} kelimeyi aşma. Sıralı adımlar için \"1.\" \"2.\" kullanabilirsin.";
+        return $"Gerektiği kadar ayrıntılı ve düzenli anlat: sıralı adımlar (\"1.\" \"2.\"), maddeler ve kısa paragraflar kullanabilirsin; nedenini ve önemli alternatifleri de söyle. Toplam ~{words} kelimeyi aşma ve boş yere uzatma.";
+    }
+
+    public static string BuildSystem(Settings s, GameContext game, string? manualProgress, string? autoProgress, string? memoryBlock,
+                                     bool typed = false)
+    {
+        var lengthRule = LengthRule(typed ? s.TypedAnswerLength : s.AnswerLength, s.AnswerMaxWords);
         bool strict = !string.Equals(s.SpoilerLevel, "Mild", StringComparison.OrdinalIgnoreCase);
         bool memory = s.Memory.Enabled;
         string progress;
@@ -24,14 +40,16 @@ internal static class Prompt
 
         var sb = new StringBuilder();
         sb.Append($"""
-Sen, "{game.GameName}" oynayan bir oyuncunun oyun içi yardımcısısın. Oyuncu oyunu durdurmadan bir tuşa basılı tutup sesli soru soruyor.
-Sana her seferinde şunlar gelir: (1) o anki oyun ekranının tam görüntüsü, (2) varsa ekranın odak noktasından (imleç ya da ekran merkezi) yakın, tam çözünürlüklü bir kırpma, (3) oyuncunun ses kaydı.
-Cevabın, oyunun sağ üst köşesinde küçük, yarı saydam bir kutuda kelime kelime akacak. Oyuncu oynamaya devam ederken okuyacak.
+Sen, "{game.GameName}" oynayan bir oyuncunun oyun içi yardımcısısın. {(typed
+    ? "Oyuncu oyunu durdurmadan yazıyla soru soruyor."
+    : "Oyuncu oyunu durdurmadan bir tuşa basılı tutup sesli soru soruyor.")}
+Sana her seferinde şunlar gelir: (1) o anki oyun ekranının tam görüntüsü, {(typed ? "" : "(2) varsa ekranın odak noktasından (imleç ya da ekran merkezi) yakın, tam çözünürlüklü bir kırpma, (3) oyuncunun ses kaydı.")}{(typed ? "(2) oyuncunun yazdığı soru." : "")}
+Cevabın {(typed ? "oyuncunun sohbet panelinde" : "oyunun sağ üst köşesinde küçük, yarı saydam bir kutuda")} kelime kelime akacak. Oyuncu oynamaya devam ederken okuyacak.
 
 # ÇIKTI BİÇİMİ (kesin kural)
-1. İLK SATIR: "S: " ile başla, ardından oyuncunun sesli sorusunun kısa ve düzgün yazılmış {lang} dökümünü yaz. Ses anlaşılmıyorsa ya da boşsa "S: (anlaşılamadı)" yaz, ikinci satırda tek cümleyle tekrar sormasını iste ve dur.
+1. İLK SATIR: "S: " ile başla, ardından oyuncunun {(typed ? "yazdığı sorunun kısa ve düzgün yazılmış hâlini" : "sesli sorusunun kısa ve düzgün yazılmış")} {lang} dökümünü yaz. {(typed ? "Soru boşsa" : "Ses anlaşılmıyorsa ya da boşsa")} "S: (anlaşılamadı)" yaz, ikinci satırda tek cümleyle tekrar sormasını iste ve dur.
 2. İkinci satırdan itibaren cevap. Selamlama, giriş, soruyu tekrar etme, özet, kapanış YOK. İlk kelimeden itibaren çözüm.
-3. En fazla 3 kısa madde ("- " ile) VEYA 2-3 cümlelik tek paragraf. Toplam ~70 kelimeyi aşma. Sıralı adımlar gerekiyorsa "1." "2." kullanabilirsin (en fazla 4 adım).
+3. UZUNLUK/BİÇİM: {lengthRule}
 4. Oyuncunun arayacağı kritik isimleri **kalın** yaz. Başlık, tablo, link, emoji, kod bloğu KULLANMA.
 
 # DİL
@@ -65,6 +83,21 @@ Oyuncu "ipucu" derse sadece bir sonraki adımı ima et, çözümü söyleme. Aks
 # DEVAM SORULARI
 Önceki kısa konuşma geçmişi verilebilir. "Peki o nerede?", "onu nasıl yaparım" gibi sorular bir önceki konuya aittir.
 """);
+
+        if (s.PointerMarkers)
+        {
+            sb.Append("""
+
+# EKRANDA İŞARET GÖSTERME (isteğe bağlı — oyuncuya gösterilmez)
+Oyuncu bir şeyin ekranda NEREDE olduğunu, NEYE basacağını ya da NEREYE gitmesi gerektiğini soruyorsa VE hedef Görüntü 1'de AÇIKÇA görünüyorsa, cevabın metninden sonra (@@MEM satırından ÖNCE) her hedef için ayrı bir satır yaz:
+@@POINT {"x":412,"y":230,"label":"Harita","step":1}
+- x, y: hedefin MERKEZİ; Görüntü 1'in sol üst köşesinden 0-1000 ölçeğinde (x soldan sağa, y yukarıdan aşağı). Kırpmaya (Görüntü 2) göre değil, HER ZAMAN Görüntü 1'e göre ver.
+- label: en fazla 3 kelime, ekranda yazdığı gibi.
+- step: birden fazla adım varsa 1, 2, 3 ... sırasıyla (en fazla 4 nokta). Tek hedefte 1.
+- Hedef görünmüyorsa (kapalı menü, harita dışı vb.) HİÇ @@POINT yazma; cevapta menüyü nasıl açacağını yazıyla anlat. Tahmin etme, nokta uydurma.
+- Metinde de kısaca söyle ("Sağ üstteki **Harita** simgesine bas"); işaret sadece yardımcıdır.
+""");
+        }
 
         if (memory)
         {
@@ -100,7 +133,8 @@ Oyuncu notlarını ya da daha önce ne kaydettiğini sorarsa aşağıdaki hafız
         return sb.ToString();
     }
 
-    public static string BuildTurnContext(GameContext game, bool hasFocusCrop, bool focusFromCursor, DateTime now)
+    public static string BuildTurnContext(GameContext game, bool hasFocusCrop, bool focusFromCursor, DateTime now,
+                                          string? typedQuestion = null)
     {
         var sb = new StringBuilder();
         sb.Append($"Oyun: {game.GameName}");
@@ -111,7 +145,10 @@ Oyuncu notlarını ya da daha önce ne kaydettiğini sorarsa aşağıdaki hafız
             sb.AppendLine(focusFromCursor
                 ? "Görüntü 2: fare imlecinin çevresinden yakın kırpma (oyuncunun işaret ettiği yer)."
                 : "Görüntü 2: ekran merkezinden yakın kırpma (kameranın/nişangahın baktığı yer).");
-        sb.AppendLine("Ses: oyuncunun sorusu. Ses kaydını dinle, ilk satırda dökümünü yaz, sonra cevapla.");
+        if (typedQuestion != null)
+            sb.AppendLine("Soru yazıyla geldi (aşağıda). Fare imleci yazı panelinde olabilir; ekranın merkezine ya da imlece göre yorum yapma.");
+        else
+            sb.AppendLine("Ses: oyuncunun sorusu. Ses kaydını dinle, ilk satırda dökümünü yaz, sonra cevapla.");
         sb.Append($"Şu anki tarih: {now:yyyy-MM-dd}.");
         return sb.ToString();
     }

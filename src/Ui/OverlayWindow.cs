@@ -175,6 +175,18 @@ internal sealed class OverlayWindow : IDisposable
         _dirty = true;
     }
 
+    /// <summary>Yeniden deneme: gelen kısmi cevabı at, "Düşünüyor" durumuna dön.</summary>
+    public void ResetAnswer()
+    {
+        if (_mode is Mode.Hidden or Mode.Error) return;
+        _answer.Clear();
+        _revealed = 0;
+        _question = "";
+        _questionFromModel = false;
+        SetMode(Mode.Thinking);
+        _header = "Düşünüyor";
+    }
+
     public void Complete(IReadOnlyList<string> sources, string? footer = null)
     {
         if (_mode is Mode.Hidden or Mode.Error) return;
@@ -291,7 +303,11 @@ internal sealed class OverlayWindow : IDisposable
         {
             _mode = Mode.Done;
             int words = CountWords(_answer.ToString()) + CountWords(_question) / 2;
-            double secs = Math.Clamp(3 + words / Math.Max(0.5, o.ReadingWordsPerSecond), o.MinVisibleSeconds, o.MaxVisibleSeconds);
+            // Uzun cevap modlarında okuma süresi tavanı yükselir
+            var cfg = _settings();
+            bool longMode = !string.Equals(cfg.AnswerLength, "Short", StringComparison.OrdinalIgnoreCase) || cfg.AnswerMaxWords > 90;
+            double maxSecs = longMode ? Math.Max(o.MaxVisibleSeconds, 60) : o.MaxVisibleSeconds;
+            double secs = Math.Clamp(3 + words / Math.Max(0.5, o.ReadingWordsPerSecond), o.MinVisibleSeconds, maxSecs);
             _holdUntil = now.AddSeconds(secs);
             _dirty = true;
         }
@@ -479,6 +495,8 @@ internal sealed class OverlayWindow : IDisposable
         }
 
         int H = (int)Math.Ceiling(y + pad);
+        // Cevap kutuya sığmıyorsa kesilir; alta "devamı panelde" ipucu konur
+        bool clipped = H > maxH && _mode == Mode.Done;
         H = Math.Clamp(H, (int)(pad * 2 + f.SmallLine), maxH);
 
         EnsureSurface(W, maxH);
@@ -498,7 +516,20 @@ internal sealed class OverlayWindow : IDisposable
         FillRect(_g, barColor, barX, pad, 3 * s, H - pad * 2);
         if (dot is { } d) FillEllipse(_g, d.color, d.x, d.y, dotSize, dotSize);
 
-        _text.Draw(_g, _ops, H - pad * 0.5f);
+        float drawBottom = H - pad * 0.5f;
+        if (clipped) drawBottom -= f.SmallLine + 4 * s;
+        _text.Draw(_g, _ops, drawBottom);
+        if (clipped)
+        {
+            _ops.Clear();
+            _ops.Add(new TextRenderer.Op
+            {
+                Text = "… Tamamı için Mouse 5'e çift dokun",
+                X = x0, Y = H - pad * 0.5f - f.SmallLine - 2 * s,
+                Font = f.SmallBold, Color = accent | 0xFF000000, LineHeight = f.SmallLine,
+            });
+            _text.Draw(_g, _ops, H);
+        }
 
         // Pencereye bas
         var dst = new Win32.POINT(mon.Right - (int)Math.Round(o.MarginRight * s) - W, mon.Top + (int)Math.Round(o.MarginTop * s));

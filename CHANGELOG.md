@@ -2,6 +2,16 @@
 
 Her sürüm GitHub'da `vX.Y.Z` etiketiyle (tag) işaretlenir.
 
+## v0.4.0 — 29.09.2026
+- **Ekranda işaret:** Model hedefi ekranda görürse üstüne nabız gibi atan halka + etiket çizilir; çok adımlı yönlendirmede numaralı.
+  Gizli `@@POINT` satırı, tıklamayı geçiren ayrı katmanlı pencere (`MarkerOverlay`). Ayarlar: `PointerMarkers`, `MarkerSeconds`.
+- **Yazılı sohbet:** Mouse 5 çift dokunuşla açılan panelin altında yazı kutusu. Enter ile sor; cevap panelde akar ve
+  geçmişe kaydedilir. Ekran görüntüsü yine gönderilir (odak kırpması olmadan). Ctrl+V, ok tuşları, Home/End/Delete desteklenir.
+- **Cevap uzunluğu ayarı:** `AnswerLength` (sesli) ve `TypedAnswerLength` (yazılı): `Short` / `Normal` / `Detailed`; `AnswerMaxWords` ile elle kelime sınırı.
+- HUD'a sığmayan uzun cevapta "Tamamı için Mouse 5'e çift dokun" ipucu; uzun modlarda kutu daha uzun süre açık kalır.
+- **Düzeltme:** Gemini 5xx (ör. 503 "yoğun talep") artık 429/404 gibi yedek modele geçirir.
+- **Düzeltme:** Cevabın ortasında bağlantı koparsa yedek model metni baştan yazıyordu ve ekranda metin çift çıkıyordu; kısmi metin artık atılıyor.
+
 ## v0.3.0 — 29.09.2026
 - **Canlı yazı:** Konuşurken söylenenler kutuda kelime kelime görünür. Gemini Live API
   (`gemini-3.5-transcribe-live`, ücretsiz katmanda çalışıyor) üzerinden, WebSocket ile, ek bağımlılık yok.

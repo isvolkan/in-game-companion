@@ -8,9 +8,9 @@ using InGameCompanion.Native;
 namespace InGameCompanion.Ui;
 
 /// <summary>
-/// Önceki sorular paneli. HUD'ın aksine tıklanabilir: açılınca odağı alır (oyun imleci bırakır),
-/// tıklamayla cevap açılır/kapanır, tekerlekle kaydırılır. Esc, Mouse 5 ya da dışarı tıklama kapatır;
-/// kapanınca odak oyuna geri verilir.
+/// Sohbet + önceki sorular paneli. HUD'ın aksine tıklanabilir: açılınca odağı alır (oyun imleci bırakır),
+/// altındaki kutuya yazıp Enter ile soru sorulur, tıklamayla cevap açılır/kapanır, tekerlekle kaydırılır.
+/// Esc, Mouse 5 ya da dışarı tıklama kapatır; kapanınca odak oyuna geri verilir.
 /// Tüm üyeler UI (ana) iş parçacığında çalışır; dışarıdan <see cref="OverlayWindow.Invoke"/> ile çağır.
 /// </summary>
 internal sealed class HistoryPanel : IDisposable
@@ -30,13 +30,27 @@ internal sealed class HistoryPanel : IDisposable
     // Durum
     private volatile bool _open;
     private string _game = "";
-    private IReadOnlyList<MemoryExchange> _items = Array.Empty<MemoryExchange>();
+    private List<MemoryExchange> _items = new();
     private readonly HashSet<int> _expanded = new();
     private float _scroll;
     private int _hover = -1;
     private bool _hoverClose;
     private bool _tracking;
     private IntPtr _returnTo;
+
+    // Yazı kutusu
+    private string _input = "";
+    private int _caret;
+    private bool _caretOn = true;
+    private bool _pending;          // cevap bekleniyor / akıyor: yeni soru gönderilemez
+    private const int MaxInput = 600;
+    private const int CaretTimerId = 7;
+
+    /// <summary>Enter ile gönderilen soru (UI iş parçacığında çağrılır).</summary>
+    public Action<string>? Submitted { get; set; }
+    /// <summary>Panel açılırken ön plandaki pencere (yazılı soruların ekran görüntüsü buradan alınır).</summary>
+    public IntPtr ReturnTarget => _returnTo;
+    public string Game => _game;
 
     // Yerleşim (son çizimden)
     private readonly List<(float top, float bottom)> _itemRects = new();
@@ -121,6 +135,13 @@ internal sealed class HistoryPanel : IDisposable
                     case Win32.WM_KEYDOWN:
                         self.OnKey((int)wParam);
                         return IntPtr.Zero;
+                    case Win32.WM_CHAR:
+                        self.OnChar((char)(int)wParam);
+                        return IntPtr.Zero;
+                    case Win32.WM_TIMER:
+                        self._caretOn = !self._caretOn;
+                        self.Render();
+                        return IntPtr.Zero;
                     case Win32.WM_SETCURSOR:
                         Win32.SetCursor(self._hover >= 0 || self._hoverClose ? self._hand : self._arrow);
                         return new IntPtr(1);
@@ -136,7 +157,11 @@ internal sealed class HistoryPanel : IDisposable
     public void Open(string game, IReadOnlyList<MemoryExchange> items, IntPtr monitor, IntPtr returnTo)
     {
         _game = game;
-        _items = items;
+        _items = new List<MemoryExchange>(items);
+        _pending = false;
+        _input = "";
+        _caret = 0;
+        _caretOn = true;
         _expanded.Clear();
         if (items.Count > 0) _expanded.Add(0); // en son cevap açık gelsin
         _scroll = 0;
@@ -148,6 +173,7 @@ internal sealed class HistoryPanel : IDisposable
         Render();
 
         Win32.ShowWindow(_hwnd, Win32.SW_SHOW);
+        Win32.SetTimer(_hwnd, (UIntPtr)CaretTimerId, 530, IntPtr.Zero);
         Win32.SetWindowPos(_hwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0, Win32.SWP_NOMOVE | Win32.SWP_NOSIZE);
         TakeFocus();
         // Oyun imleci pencereye kilitlemiş olabilir; serbest bırak ve imleci panelin ortasına getir
@@ -160,10 +186,49 @@ internal sealed class HistoryPanel : IDisposable
     {
         if (!_open) return;
         _open = false;
+        Win32.KillTimer(_hwnd, (UIntPtr)CaretTimerId);
         Win32.ShowWindow(_hwnd, Win32.SW_HIDE);
         if (restoreFocus && _returnTo != IntPtr.Zero && Win32.IsWindow(_returnTo))
             Win32.SetForegroundWindow(_returnTo);
-        _items = Array.Empty<MemoryExchange>();
+        _items = new List<MemoryExchange>();
+    }
+
+    // ------------------------------------------------------------------ Sohbet: bekleyen soru
+
+    /// <summary>Gönderilen soruyu listenin başına ekler; cevap gelene kadar "Düşünüyor…" gösterilir.</summary>
+    public void BeginPending(string question)
+    {
+        if (!_open) return;
+        _pending = true;
+        _items.Insert(0, new MemoryExchange { Q = question, A = "", At = DateTime.Now });
+        _expanded.Clear();
+        _expanded.Add(0);
+        _scroll = 0;
+        Render();
+    }
+
+    /// <summary>Yeniden deneme: gelen kısmi cevabı at.</summary>
+    public void ResetPending()
+    {
+        if (!_open || !_pending || _items.Count == 0) return;
+        _items[0].A = "";
+        Render();
+    }
+
+    public void AppendPending(string delta)
+    {
+        if (!_open || !_pending || _items.Count == 0) return;
+        _items[0].A += delta;
+        Render();
+    }
+
+    /// <summary>Akış bitti. <paramref name="error"/> doluysa cevap yerine hata metni gösterilir.</summary>
+    public void EndPending(string? error)
+    {
+        if (!_open || !_pending) return;
+        _pending = false;
+        if (error != null && _items.Count > 0) _items[0].A = "⚠ " + error;
+        Render();
     }
 
     /// <summary>
@@ -205,10 +270,67 @@ internal sealed class HistoryPanel : IDisposable
         switch (vk)
         {
             case Win32.VK_ESCAPE: Close(restoreFocus: true); break;
+            case Win32.VK_LEFT: _caret = Math.Max(0, _caret - 1); CaretMoved(); break;
+            case Win32.VK_RIGHT: _caret = Math.Min(_input.Length, _caret + 1); CaretMoved(); break;
+            case Win32.VK_HOME: _caret = 0; CaretMoved(); break;
+            case Win32.VK_END: _caret = _input.Length; CaretMoved(); break;
+            case Win32.VK_DELETE:
+                if (_caret < _input.Length) { _input = _input.Remove(_caret, 1); CaretMoved(); }
+                break;
+            case 'V' when (Win32.GetKeyState(Win32.VK_CONTROL) & 0x8000) != 0:
+                Insert(Win32.GetClipboardText(_hwnd));
+                break;
             case Win32.VK_UP: ScrollBy(-line * 2); break;
             case Win32.VK_DOWN: ScrollBy(line * 2); break;
             case Win32.VK_PRIOR: ScrollBy(-page); break;
             case Win32.VK_NEXT: ScrollBy(page); break;
+        }
+    }
+
+    private void CaretMoved()
+    {
+        _caretOn = true;
+        Render();
+    }
+
+    private void OnChar(char c)
+    {
+        if (c == '\r') { Submit(); return; }
+        if (c == '\b')
+        {
+            if (_caret > 0) { _input = _input.Remove(_caret - 1, 1); _caret--; CaretMoved(); }
+            return;
+        }
+        if (c < 32 || c == 127) return; // Esc, Ctrl+harf vb.
+        Insert(c.ToString());
+    }
+
+    private void Insert(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        // Yapıştırılan çok satırlı metin tek satıra indirilir
+        text = text.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ').Replace('\t', ' ');
+        text = string.Concat(System.Linq.Enumerable.Where(text, ch => !char.IsControl(ch)));
+        int room = MaxInput - _input.Length;
+        if (room <= 0) return;
+        if (text.Length > room) text = text[..room];
+        _input = _input.Insert(_caret, text);
+        _caret += text.Length;
+        CaretMoved();
+    }
+
+    private void Submit()
+    {
+        var q = _input.Trim();
+        if (q.Length == 0 || _pending) return;
+        _input = "";
+        _caret = 0;
+        BeginPending(q);
+        try { Submitted?.Invoke(q); }
+        catch (Exception ex)
+        {
+            Log.Error("Yazılı soru gönderilemedi", ex);
+            EndPending(ex.Message);
         }
     }
 
@@ -339,20 +461,22 @@ internal sealed class HistoryPanel : IDisposable
         // Başlık (kaymaz)
         _ops.Clear();
         float y = pad;
-        _ops.Add(new TextRenderer.Op { Text = "Önceki sorular · " + _game, X = x0, Y = y, Font = f.SmallBold, Color = Muted, LineHeight = f.SmallLine });
+        _ops.Add(new TextRenderer.Op { Text = "Sohbet · " + _game, X = x0, Y = y, Font = f.SmallBold, Color = Muted, LineHeight = f.SmallLine });
         float closeSize = f.SmallLine + 6 * s;
         _closeRect = (W - pad - closeSize, y - 3 * s, closeSize, closeSize);
         if (_hoverClose) FillRoundRect(_g, 0x33FFFFFF, _closeRect.x, _closeRect.y, _closeRect.w, _closeRect.h, 4 * s);
         float xw = _text.Measure(f.SmallBold, "✕");
         _ops.Add(new TextRenderer.Op { Text = "✕", X = _closeRect.x + (closeSize - xw) / 2, Y = y, Font = f.SmallBold, Color = _hoverClose ? Bold : Muted, LineHeight = f.SmallLine });
         y += f.SmallLine + 2 * s;
-        _text.LayoutPlain("Tıkla: cevabı aç/kapat · Tekerlek: kaydır · Esc / Mouse 5: kapat",
+        _text.LayoutPlain("Aşağıya yaz + Enter: sor · Tıkla: cevabı aç/kapat · Tekerlek: kaydır · Esc / Mouse 5: kapat",
             f.Small, f.SmallLine, Faint, x0, contentW, ref y, _ops);
         y += 6 * s;
         FillRect(_g, 0x22FFFFFF, x0, y, W - x0 - pad, Math.Max(1, s));
         y += 6 * s;
         _viewTop = y;
-        _viewBottom = H - pad;
+        float inputH = f.BodyLine + 12 * s;
+        float inputTop = H - pad - inputH;
+        _viewBottom = inputTop - 10 * s;
         _text.Draw(_g, _ops, float.MaxValue);
 
         // Kayan içerik (içerik koordinatları: 0 = görünür alanın tepesi, kaydırmadan önce)
@@ -362,7 +486,7 @@ internal sealed class HistoryPanel : IDisposable
         float cy = 0;
         if (_items.Count == 0)
         {
-            _text.LayoutPlain("Bu oyun için henüz kayıtlı soru yok. Mouse 5'i basılı tutup bir soru sor; burada görünecek.",
+            _text.LayoutPlain("Bu oyun için henüz kayıtlı soru yok. Aşağıya yazarak ya da Mouse 5'i basılı tutup konuşarak soru sor; burada görünecek.",
                 f.Body, f.BodyLine, Muted, x0, contentW, ref cy, _ops);
         }
         for (int i = 0; i < _items.Count; i++)
@@ -371,7 +495,7 @@ internal sealed class HistoryPanel : IDisposable
             bool open = _expanded.Contains(i);
             float top = cy;
             cy += 7 * s;
-            string when = it.At.ToString("dd.MM · HH:mm", CultureInfo.InvariantCulture);
+            string when = _pending && i == 0 ? "şimdi" : it.At.ToString("dd.MM · HH:mm", CultureInfo.InvariantCulture);
             _ops.Add(new TextRenderer.Op { Text = (open ? "▾ " : "▸ ") + when, X = x0, Y = cy, Font = f.Small, Color = Faint, LineHeight = f.SmallLine });
             cy += f.SmallLine;
             var q = string.IsNullOrWhiteSpace(it.Q) ? "(soru metni yok)" : it.Q;
@@ -380,6 +504,11 @@ internal sealed class HistoryPanel : IDisposable
             {
                 cy += 4 * s;
                 _text.LayoutRich(it.A, f, White, accent, Bold, x0 + 6 * s, contentW - 6 * s, ref cy, _ops);
+            }
+            else if (open && _pending && i == 0)
+            {
+                cy += 4 * s;
+                _text.LayoutPlain("Düşünüyor…", f.SmallItalic, f.SmallLine, Faint, x0 + 6 * s, contentW - 6 * s, ref cy, _ops);
             }
             cy += 7 * s;
             _itemRects.Add((top, cy));
@@ -407,6 +536,37 @@ internal sealed class HistoryPanel : IDisposable
         }
         _text.Draw(_g, _visibleOps, float.MaxValue);
         Gdip.GdipResetClip(_g);
+
+        // Yazı kutusu
+        {
+            float bx = x0 - 6 * s, bw = W - bx - pad;
+            FillRoundRect(_g, 0x26FFFFFF, bx, inputTop, bw, inputH, 8 * s);
+            FillRoundRect(_g, 0xF20D1015, bx + Math.Max(1, s), inputTop + Math.Max(1, s), bw - 2 * Math.Max(1, s), inputH - 2 * Math.Max(1, s), 7 * s);
+            float tx = bx + 10 * s, ty = inputTop + (inputH - f.BodyLine) / 2;
+            float availW = bw - 20 * s;
+            _ops.Clear();
+            if (_pending)
+                _ops.Add(new TextRenderer.Op { Text = "Cevap yazılıyor…", X = tx, Y = ty, Font = f.SmallItalic, Color = Faint, LineHeight = f.BodyLine });
+            else if (_input.Length == 0)
+                _ops.Add(new TextRenderer.Op { Text = "Bir şey sor…  (Enter: gönder)", X = tx, Y = ty, Font = f.Body, Color = Faint, LineHeight = f.BodyLine });
+            else
+            {
+                // İmleç görünür kalsın: soldan kırp, sağdan sığdığı kadar göster
+                int a = 0;
+                while (a < _caret && _text.Measure(f.Body, _input.Substring(a, _caret - a)) > availW - 4 * s) a++;
+                int e = _input.Length;
+                while (e > _caret && _text.Measure(f.Body, _input.Substring(a, e - a)) > availW) e--;
+                _ops.Add(new TextRenderer.Op { Text = _input.Substring(a, e - a), X = tx, Y = ty, Font = f.Body, Color = White, LineHeight = f.BodyLine });
+                if (_caretOn)
+                {
+                    float cxp = tx + _text.Measure(f.Body, _input.Substring(a, _caret - a));
+                    FillRect(_g, 0xFFFFFFFF, cxp, ty + 2 * s, Math.Max(1.5f, 1.5f * s), f.BodyLine - 4 * s);
+                }
+            }
+            if (!_pending && _input.Length == 0 && _caretOn)
+                FillRect(_g, 0xFFFFFFFF, tx - 1 * s, ty + 2 * s, Math.Max(1.5f, 1.5f * s), f.BodyLine - 4 * s);
+            _text.Draw(_g, _ops, float.MaxValue);
+        }
 
         // Kaydırma çubuğu
         if (_contentH > viewH)

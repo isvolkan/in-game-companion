@@ -25,6 +25,7 @@ internal sealed class Companion
     private readonly GeminiClient _gemini;
     private readonly GameMemoryStore _memory;
     private readonly HistoryPanel _panel;
+    private readonly MarkerOverlay _markers;
     private readonly object _gate = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _summarizing = new();
 
@@ -44,10 +45,12 @@ internal sealed class Companion
     private IntPtr _monitor;
     private CancellationTokenSource? _cts;
 
-    public Companion(Func<Settings> settings, OverlayWindow overlay, HistoryPanel panel, GameDetector detector,
-                     GeminiClient gemini, GameMemoryStore memory)
+    public Companion(Func<Settings> settings, OverlayWindow overlay, HistoryPanel panel, MarkerOverlay markers,
+                     GameDetector detector, GeminiClient gemini, GameMemoryStore memory)
     {
         _panel = panel;
+        _markers = markers;
+        _panel.Submitted = AskTyped;
         _memory = memory;
         _settings = settings;
         _overlay = overlay;
@@ -74,6 +77,7 @@ internal sealed class Companion
         }
 
         var s = _settings();
+        _overlay.Invoke(_ => _markers.Hide());
         int id;
         lock (_gate)
         {
@@ -172,7 +176,7 @@ internal sealed class Companion
             bool doubleTap = _lastTapTicks != 0 && Stopwatch.GetElapsedTime(_lastTapTicks).TotalMilliseconds < DoubleTapMs;
             _lastTapTicks = doubleTap ? 0 : Stopwatch.GetTimestamp();
             if (doubleTap) OpenHistory();
-            else _overlay.Invoke(o => o.Dismiss());
+            else _overlay.Invoke(o => { o.Dismiss(); _markers.Hide(); });
             return;
         }
         _lastTapTicks = 0;
@@ -201,6 +205,10 @@ internal sealed class Companion
         }
         var name = game ?? "Bilinmeyen oyun";
         var fg = Win32.GetForegroundWindow();
+        // Ön plan bu uygulamanın kendi penceresiyse (tepsi menüsü vb.) son bilinen oyun penceresini hedef al
+        Win32.GetWindowThreadProcessId(fg, out var fgPid);
+        if ((fgPid == (uint)Environment.ProcessId || fg == IntPtr.Zero) && _game != null && Win32.IsWindow(_game.Hwnd))
+            fg = _game.Hwnd;
         var monitor = _monitor != IntPtr.Zero ? _monitor : Win32.MonitorFromWindow(fg, Win32.MONITOR_DEFAULTTONEAREST);
         _overlay.Invoke(o =>
         {
@@ -266,7 +274,11 @@ internal sealed class Companion
             parser.AnswerDelta += d => { if (id == Volatile.Read(ref _session)) _overlay.Invoke(o => o.AppendAnswer(d)); };
 
             long preMs = total.ElapsedMilliseconds;
-            var result = await _gemini.AskStreamAsync(req, parser.Feed, ct).ConfigureAwait(false);
+            var result = await _gemini.AskStreamAsync(req, parser.Feed, ct, () =>
+            {
+                parser.Reset();
+                if (id == Volatile.Read(ref _session)) _overlay.Invoke(o => o.ResetAnswer());
+            }).ConfigureAwait(false);
             parser.Flush();
             if (id != Volatile.Read(ref _session)) return;
 
@@ -278,17 +290,11 @@ internal sealed class Companion
             else
             {
                 var sources = result.Sources.ToList();
-                MemoryUpdate? upd = null;
-                if (memOn)
-                {
-                    upd = _memory.ApplyMeta(game.GameName, parser.ParseMeta());
-                    LastGameName = game.GameName;
-                    if (_memory.AddExchange(game.GameName, parser.Question, answer, s.Memory.SummarizeAfter))
-                        _ = SummarizeAsync(game.GameName);
-                }
+                MemoryUpdate? upd = memOn ? SaveExchange(game.GameName, parser, answer, parser.Question, s) : null;
                 var footerText = string.Join(" · ", new[] { result.Notice, upd?.Footer }.Where(x => !string.IsNullOrEmpty(x)));
                 var footer = footerText.Length == 0 ? null : footerText;
                 _overlay.Invoke(o => o.Complete(sources, footer));
+                ShowPoints(parser, cap, s);
                 if (upd != null && (upd.NewQuest != null || upd.NewRegion != null))
                     Log.Info($"  Hafıza: yeni görev={upd.NewQuest ?? "-"}, yeni bölge={upd.NewRegion ?? "-"}");
             }
@@ -327,6 +333,132 @@ internal sealed class Companion
         finally
         {
             if (!trFinishing) tr?.Cancel();
+        }
+    }
+
+    /// <summary>Meta satırını uygular ve soru-cevabı hafızaya yazar (özetleme gerekiyorsa başlatır).</summary>
+    private MemoryUpdate SaveExchange(string gameName, ResponseParser parser, string answer, string question, Settings s)
+    {
+        var upd = _memory.ApplyMeta(gameName, parser.ParseMeta());
+        LastGameName = gameName;
+        if (_memory.AddExchange(gameName, question, answer, s.Memory.SummarizeAfter))
+            _ = SummarizeAsync(gameName);
+        return upd;
+    }
+
+    /// <summary>Modelin @@POINT satırları varsa ekranda işaret gösterir (yakalama karesine göre ekran pikseline çevrilir).</summary>
+    private void ShowPoints(ResponseParser parser, CaptureResult cap, Settings s)
+    {
+        if (!s.PointerMarkers) return;
+        var pts = parser.ParsePoints();
+        if (pts.Count == 0) return;
+        _overlay.Invoke(_ => _markers.Show(pts, cap.ScreenLeft, cap.ScreenTop, cap.SourceWidth, cap.SourceHeight, s.MarkerSeconds));
+    }
+
+    // ------------------------------------------------------------------ Yazılı soru (sohbet paneli)
+
+    /// <summary>Panelde Enter'a basılınca (UI iş parçacığı) çağrılır. Yeni bir oturum açar, süren isteği iptal eder.</summary>
+    private void AskTyped(string text)
+    {
+        int id;
+        CancellationToken ct;
+        lock (_gate)
+        {
+            id = ++_session;
+            _cts?.Cancel();
+            _cts = new CancellationTokenSource();
+            ct = _cts.Token;
+            _recorder?.Cancel();
+            _recorder = null;
+            _transcriber?.Cancel();
+            _transcriber = null;
+        }
+        _markers.Hide();
+
+        var target = _panel.ReturnTarget;
+        if (target == IntPtr.Zero || !Win32.IsWindow(target)) target = _game?.Hwnd ?? IntPtr.Zero;
+        _ = ProcessTypedAsync(id, text, target, ct);
+    }
+
+    private async Task ProcessTypedAsync(int id, string text, IntPtr target, CancellationToken ct)
+    {
+        var s = _settings();
+        var total = Stopwatch.StartNew();
+        void Ui(Action<HistoryPanel> a)
+        {
+            if (id == Volatile.Read(ref _session)) _overlay.Invoke(_ => a(_panel));
+        }
+        try
+        {
+            var game = _detector.Detect(target) ?? _game ?? new GameContext(IntPtr.Zero, "", "", "Bilinmeyen oyun", false, null, null);
+
+            // Panel WDA_EXCLUDEFROMCAPTURE ile işaretli: kareye girmez. Odak kırpması yok (imleç panelde).
+            CaptureResult cap;
+            try { cap = await Task.Run(() => ScreenCapture.Capture(target, s.Capture, includeFocus: false), ct).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Log.Error("Ekran yakalama (yazılı)", ex);
+                Ui(p => p.EndPending("Ekran görüntüsü alınamadı: " + ex.Message));
+                return;
+            }
+            ct.ThrowIfCancellationRequested();
+
+            bool memOn = s.Memory.Enabled;
+            var history = memOn
+                ? _memory.Recent(game.GameName, s.HistoryTurns, s.HistoryMinutes)
+                : Array.Empty<ChatTurn>();
+            string? manualProgress = !string.IsNullOrWhiteSpace(game.ProgressNote) ? game.ProgressNote : s.ProgressNote;
+            var req = new AskRequest(
+                Prompt.BuildSystem(s, game, manualProgress,
+                    memOn ? _memory.AutoProgress(game.GameName) : null,
+                    memOn ? _memory.BuildPromptBlock(game.GameName) : null,
+                    typed: true),
+                Prompt.BuildTurnContext(game, false, false, DateTime.Now, text),
+                cap.FullJpeg, null, null, history, text);
+
+            var parser = new ResponseParser();
+            parser.AnswerDelta += d => Ui(p => p.AppendPending(d));
+
+            var result = await _gemini.AskStreamAsync(req, parser.Feed, ct, () =>
+            {
+                parser.Reset();
+                Ui(p => p.ResetPending());
+            }).ConfigureAwait(false);
+            parser.Flush();
+            if (id != Volatile.Read(ref _session)) return;
+
+            var answer = parser.Answer.ToString().Trim();
+            if (answer.Length == 0)
+            {
+                Ui(p => p.EndPending("Boş yanıt geldi, tekrar dene."));
+            }
+            else
+            {
+                if (memOn) SaveExchange(game.GameName, parser, answer, string.IsNullOrWhiteSpace(parser.Question) ? text : parser.Question, s);
+                if (result.Notice != null) Ui(p => p.AppendPending("\n\n" + result.Notice));
+                Ui(p => p.EndPending(null));
+                ShowPoints(parser, cap, s);
+            }
+
+            if (result.Notice != null) Log.Warn("  Uyarı: " + result.Notice);
+            Log.Info($"[{game.GameName}] YAZILI model={result.Model} yakalama={cap.ElapsedMs}ms ilkToken={result.FirstTokenMs}ms " +
+                     $"toplam={total.ElapsedMilliseconds}ms token(in={result.PromptTokens}, out={result.OutputTokens}, think={result.ThoughtTokens}) " +
+                     $"nokta={parser.ParsePoints().Count}");
+            Log.Info($"  S: {text}");
+            Log.Info($"  C: {answer.Replace('\n', ' ')}");
+            if (parser.MetaRaw.Length > 0) Log.Info($"  M: {parser.MetaRaw.Trim().Replace('\n', ' ')}");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) { Ui(p => p.EndPending("Yanıt zaman aşımına uğradı.")); }
+        catch (GeminiException gex)
+        {
+            Log.Error($"Gemini {gex.Status}: {gex.Message}");
+            Ui(p => p.EndPending(gex.UserMessage));
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Yazılı istek başarısız", ex);
+            Ui(p => p.EndPending("Hata: " + ex.Message));
         }
     }
 

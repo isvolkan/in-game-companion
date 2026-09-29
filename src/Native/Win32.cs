@@ -59,6 +59,9 @@ internal static class Win32
     public const int IDC_ARROW = 32512, IDC_HAND = 32649;
     public const uint KEYEVENTF_KEYUP = 0x0002;
     public const uint TME_LEAVE = 0x00000002;
+    public const uint WM_CHAR = 0x0102;
+    public const int VK_BACK = 0x08, VK_END = 0x23, VK_HOME = 0x24, VK_LEFT = 0x25, VK_RIGHT = 0x27, VK_DELETE = 0x2E, VK_CONTROL = 0x11;
+    public const uint CF_UNICODETEXT = 13;
     public const uint WM_NULL = 0x0000;
 
     public const int MA_NOACTIVATE = 3;
@@ -149,6 +152,42 @@ internal static class Win32
     }
 
     // ---------- user32 ----------
+    [DllImport("user32.dll")]
+    public static extern short GetKeyState(int vk);
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool OpenClipboard(IntPtr hWndNewOwner);
+    [DllImport("user32.dll")]
+    public static extern bool CloseClipboard();
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetClipboardData(uint format);
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GlobalLock(IntPtr hMem);
+    [DllImport("kernel32.dll")]
+    public static extern bool GlobalUnlock(IntPtr hMem);
+
+    /// <summary>Panodaki metin (yoksa null). Panoyu kısa süre açık tutan başka uygulama olabilir; birkaç kez dener.</summary>
+    public static string? GetClipboardText(IntPtr owner)
+    {
+        for (int i = 0; i < 5; i++)
+        {
+            if (OpenClipboard(owner))
+            {
+                try
+                {
+                    var h = GetClipboardData(CF_UNICODETEXT);
+                    if (h == IntPtr.Zero) return null;
+                    var p = GlobalLock(h);
+                    if (p == IntPtr.Zero) return null;
+                    try { return Marshal.PtrToStringUni(p); }
+                    finally { GlobalUnlock(h); }
+                }
+                finally { CloseClipboard(); }
+            }
+            System.Threading.Thread.Sleep(15);
+        }
+        return null;
+    }
+
     [DllImport("user32.dll")]
     public static extern IntPtr LoadCursorW(IntPtr hInstance, IntPtr cursorName);
     [DllImport("user32.dll")]

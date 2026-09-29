@@ -18,8 +18,9 @@ internal sealed record AskRequest(
     string TurnContext,
     byte[] FullJpeg,
     byte[]? FocusJpeg,
-    byte[] Wav,
-    IReadOnlyList<ChatTurn> History);
+    byte[]? Wav,
+    IReadOnlyList<ChatTurn> History,
+    string? TypedQuestion = null);
 
 internal sealed record AskResult(
     string Text,
@@ -85,8 +86,21 @@ internal sealed class GeminiClient
     /// Soruyu sorar. 429 gelirse önce web aramasız, sonra yedek modelle tekrar dener.
     /// 429/404 yanıtı başlıkta döndüğü için o ana kadar ekrana hiçbir metin akmamış olur.
     /// </summary>
-    public async Task<AskResult> AskStreamAsync(AskRequest r, Action<string> onText, CancellationToken ct)
+    /// <param name="onReset">
+    /// Akış metin göndermeye başladıktan sonra koptuysa (ör. cevabın ortasında 503) ve yeniden denenecekse çağrılır:
+    /// tüketici o ana kadar aldığı metni atmalıdır, yoksa yeni deneme metni sonuna eklenir.
+    /// </param>
+    public async Task<AskResult> AskStreamAsync(AskRequest r, Action<string> onText, CancellationToken ct, Action? onReset = null)
     {
+        bool emitted = false;
+        Action<string> tracked = t => { emitted = true; onText(t); };
+        void Retrying()
+        {
+            if (!emitted) return;
+            emitted = false;
+            onReset?.Invoke();
+        }
+
         var s = _settings();
         var model = s.Model;
         var fallback = string.IsNullOrWhiteSpace(s.FallbackModel) ? null : s.FallbackModel.Trim();
@@ -98,7 +112,7 @@ internal sealed class GeminiClient
         {
             try
             {
-                var res = await AskOnceAsync(r, s, model, search, onText, ct).ConfigureAwait(false);
+                var res = await AskOnceAsync(r, s, model, search, tracked, ct).ConfigureAwait(false);
                 return res with { Notice = notices.Count == 0 ? null : string.Join(" ", notices) };
             }
             catch (GeminiException ex) when (ex.Status == 429 && search)
@@ -107,14 +121,16 @@ internal sealed class GeminiClient
                 Interlocked.Exchange(ref _searchBlockedUntilTicks, (DateTime.UtcNow + SearchBlockDuration).Ticks);
                 search = false;
                 notices.Add("Web araması kotası dolu, aramasız cevaplandı.");
+                Retrying();
             }
-            catch (GeminiException ex) when ((ex.Status == 429 || ex.Status == 404)
+            catch (GeminiException ex) when ((ex.Status == 429 || ex.Status == 404 || ex.Status >= 500)
                                              && fallback != null
                                              && !string.Equals(model, fallback, StringComparison.OrdinalIgnoreCase))
             {
                 Log.Warn($"Gemini {ex.Status} ({model}): {ex.Message} → yedek model {fallback}");
                 notices.Add($"{model} kullanılamadı ({ex.Status}), yedek model {fallback} ile cevaplandı.");
                 model = fallback;
+                Retrying();
             }
         }
     }
@@ -287,9 +303,16 @@ internal sealed class GeminiClient
             InlineData("image/jpeg", r.FullJpeg),
         };
         if (r.FocusJpeg != null) parts.Add(InlineData("image/jpeg", r.FocusJpeg));
-        parts.Add(InlineData("audio/wav", r.Wav));
         // Son kullanıcı turu boş olmayan bir metinle bitmeli
-        parts.Add(new JsonObject { ["text"] = "Yukarıdaki ses kaydı oyuncunun sorusu. Kurallara uyarak cevapla." });
+        if (r.Wav != null)
+        {
+            parts.Add(InlineData("audio/wav", r.Wav));
+            parts.Add(new JsonObject { ["text"] = "Yukarıdaki ses kaydı oyuncunun sorusu. Kurallara uyarak cevapla." });
+        }
+        else
+        {
+            parts.Add(new JsonObject { ["text"] = "Oyuncunun yazılı sorusu: " + (r.TypedQuestion ?? "") + "\nKurallara uyarak cevapla." });
+        }
 
         contents.Add(new JsonObject { ["role"] = "user", ["parts"] = parts });
 

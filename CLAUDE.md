@@ -105,7 +105,13 @@ src/Ui/TextRenderer.cs    Kelime kaydırma + mini markdown
 src/Ui/TrayIcon.cs        Shell_NotifyIcon + sağ tık menüsü
 src/Ui/HistoryPanel.cs    (v0.3) Önceki sorular paneli: tıklanabilir, odak alan ayrı katmanlı pencere
 src/Ai/LiveTranscriber.cs (v0.3) Gemini Live WebSocket ile konuşurken canlı yazı
+src/Ui/MarkerOverlay.cs   (v0.4) "Şuna bas" işaretleri: tıklamayı geçiren küçük katmanlı pencere, nabız halkası + etiket
 ```
+
+v0.4 notları: `HistoryPanel` artık sohbet paneli (yazı kutusu, `Submitted` olayı, `BeginPending/AppendPending/EndPending`).
+`Companion.AskTyped` yazılı soruyu işler (ekran görüntüsü `panel.ReturnTarget` penceresinden, odak kırpması yok). Cevap uzunluğu `Prompt.LengthRule` içinde.
+`ResponseParser` artık genel `@@` önekini gizler: `@@MEM` (hafıza) ve `@@POINT` (işaret, 0–1000 ölçeği, HER ZAMAN Görüntü 1'e göre).
+`GeminiClient.AskStreamAsync(..., onReset)`: akış ortasında kopup yeniden denenirse tüketici kısmi metni atmalı (`ResponseParser.Reset`).
 
 ## 6. İş parçacığı kuralları (kırma!)
 

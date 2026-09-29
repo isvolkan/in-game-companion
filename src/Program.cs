@@ -44,10 +44,11 @@ internal static class Program
 
         var overlay = new OverlayWindow(Current);
         var panel = new HistoryPanel(Current);
+        var markers = new MarkerOverlay(Current);
         var detector = new GameDetector(Current);
         var gemini = new GeminiClient(Current);
         var memory = new GameMemoryStore();
-        var companion = new Companion(Current, overlay, panel, detector, gemini, memory);
+        var companion = new Companion(Current, overlay, panel, markers, detector, gemini, memory);
 
         MouseHook? hook = null;
         void InstallHook()
@@ -83,7 +84,7 @@ internal static class Program
             }
             catch (Exception ex) { overlay.ShowError("Ayarlar yüklenemedi: " + ex.Message); }
         });
-        tray.AddMenuItem("Önceki sorular…", () => companion.OpenHistory());
+        tray.AddMenuItem("Sohbet / önceki sorular…", () => companion.OpenHistory());
         tray.AddMenuItem("Hafıza klasörünü aç", () => { Directory.CreateDirectory(GameMemoryStore.Dir); OpenFile(GameMemoryStore.Dir); });
         tray.AddMenuItem("Son oyunun hafızasını sil…", () =>
         {
@@ -118,7 +119,7 @@ internal static class Program
         else
         {
             overlay.ShowInfo("Oyun Asistanı hazır",
-                $"Oyunda **{hook.ButtonLabel}** tuşunu basılı tut, sorunu söyle, bırak. Kısa dokunuş kutuyu kapatır, çift dokunuş önceki soruları açar.", 6);
+                $"Oyunda **{hook.ButtonLabel}** tuşunu basılı tut, sorunu söyle, bırak. Kısa dokunuş kutuyu kapatır, çift dokunuş yazılı sohbeti ve önceki soruları açar.", 6);
             _ = gemini.WarmUpAsync();
         }
 
@@ -130,6 +131,7 @@ internal static class Program
         }
 
         hook?.Dispose();
+        markers.Dispose();
         panel.Dispose();
         overlay.Dispose();
         Gdip.Shutdown();
