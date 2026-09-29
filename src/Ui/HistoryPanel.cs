@@ -544,6 +544,7 @@ internal sealed class HistoryPanel : IDisposable
             Toggle("Web araması", "Ücretsiz Gemini katmanında çalışmaz (429)", s => s.UseWebSearch, (s, v) => s.UseWebSearch = v),
             Choice("Spoiler koruması", "Sıkı: hikâye bilgisi vermez", new[] { "Strict", "Mild" }, SpoilerNames,
                    s => s.SpoilerLevel, (s, v) => s.SpoilerLevel = v),
+            Toggle("Otomatik oyun profili", "Yeni oyunu tanıyıp o oyunu anlatan profili kendiliğinden oluşturur (oyun başına +1 istek)", s => s.AutoGameProfile, (s, v) => s.AutoGameProfile = v),
             Toggle("Yedek model uyarısı", "Yedeğe geçilince kutuda not göster", s => s.ShowModelNotice, (s, v) => s.ShowModelNotice = v),
             Choice("Kısayol tuşu", "Basılı tut = sor · çift dokun = bu panel", new[] { "XButton2", "XButton1", "Middle" }, HotkeyNames,
                    s => s.Hotkey, (s, v) => s.Hotkey = v),

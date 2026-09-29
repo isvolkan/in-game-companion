@@ -27,6 +27,8 @@ internal sealed class Companion
     private readonly GameMemoryStore _memory;
     private readonly HistoryPanel _panel;
     private readonly MarkerOverlay _markers;
+    private readonly GameProfiler _profiler;
+    private (GameContext game, byte[] jpeg)? _lastFrame;   // profil yeniden oluşturma için son oyun ekranı
     private readonly object _gate = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _summarizing = new();
 
@@ -47,8 +49,9 @@ internal sealed class Companion
     private CancellationTokenSource? _cts;
 
     public Companion(Func<Settings> settings, OverlayWindow overlay, HistoryPanel panel, MarkerOverlay markers,
-                     GameDetector detector, GeminiClient gemini, GameMemoryStore memory)
+                     GameDetector detector, GeminiClient gemini, GameMemoryStore memory, GameProfiler profiler)
     {
+        _profiler = profiler;
         _panel = panel;
         _markers = markers;
         _panel.Submitted = AskTyped;
@@ -191,6 +194,20 @@ internal sealed class Companion
     /// Önceki sorular panelini açar: ön plandaki oyunun geçmişi; boşsa bu oturumda son soru sorulan oyun,
     /// o da yoksa hafızası en son güncellenen oyun. Herhangi bir iş parçacığından çağrılabilir.
     /// </summary>
+    /// <summary>Tepsi menüsü: son sorulan oyunun profilini (varsa elle yazılanı yedekleyip) yeniden oluşturur.</summary>
+    public void RegenerateProfile()
+    {
+        var lf = _lastFrame;
+        if (lf == null)
+        {
+            _overlay.Invoke(o => o.ShowInfo("Oyun profili", "Önce oyunda bir soru sor; profil o oyunun ekranından oluşturulur.", 5));
+            return;
+        }
+        var g = lf.Value.game;
+        _profiler.Regenerate(g, lf.Value.jpeg);
+        _overlay.Invoke(o => o.ShowInfo("Oyun profili", $"**{g.GameName}** için profil yeniden oluşturuluyor…", 4));
+    }
+
     public void OpenHistory(bool settingsView = false)
     {
         var game = _game?.GameName;
@@ -295,7 +312,7 @@ internal sealed class Companion
                 var footerText = string.Join(" · ", new[] { s.ShowModelNotice ? result.Notice : null, upd?.Footer }.Where(x => !string.IsNullOrEmpty(x)));
                 var footer = footerText.Length == 0 ? null : footerText;
                 _overlay.Invoke(o => o.Complete(sources, footer));
-                ShowPoints(id, ct, parser, cap, s, parser.Question, answer, result.Model);
+                ShowPoints(id, ct, parser, cap, s, parser.Question, answer, result.Model); _profiler.Ensure(game, cap.FullJpeg); _lastFrame = (game, cap.FullJpeg);
                 if (upd != null && (upd.NewQuest != null || upd.NewRegion != null))
                     Log.Info($"  Hafıza: yeni görev={upd.NewQuest ?? "-"}, yeni bölge={upd.NewRegion ?? "-"}");
             }
@@ -559,7 +576,7 @@ internal sealed class Companion
                 if (memOn) SaveExchange(game.GameName, parser, answer, string.IsNullOrWhiteSpace(parser.Question) ? text : parser.Question, s);
                 if (s.ShowModelNotice && result.Notice != null) Ui(p => p.AppendPending("\n\n" + result.Notice));
                 Ui(p => p.EndPending(null));
-                ShowPoints(id, ct, parser, cap, s, parser.Question, answer, result.Model);
+                ShowPoints(id, ct, parser, cap, s, parser.Question, answer, result.Model); _profiler.Ensure(game, cap.FullJpeg); _lastFrame = (game, cap.FullJpeg);
             }
 
             if (result.Notice != null) Log.Warn("  Uyarı: " + result.Notice);

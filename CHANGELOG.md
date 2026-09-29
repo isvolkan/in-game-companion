@@ -2,6 +2,14 @@
 
 Her sürüm GitHub'da `vX.Y.Z` etiketiyle (tag) işaretlenir.
 
+## v0.7.0 — 29.09.2026
+- **Otomatik oyun profili:** Tüm oyunlar oyunu "bilir". Profili olmayan bir oyun sorulunca arka planda (sormadan, oyun başına +1 istek) oyun tanınır,
+  tam adı bulunur ve spoilersiz bir profil `games/<Oyun>.md` olarak yazılır; `Games` tablosuna eklenir. Profil sonraki her soruda sistem talimatına girer.
+- Oyun olmayan uygulamalar sabit bir listeyle ve modelin "oyun değil" yanıtıyla elenir (`games/ignored.json`).
+- Oyunun adı sonradan düzelirse (pencere başlığından gerçek adına) eski adla kayıtlı **hafıza dosyası yeni ada taşınır**.
+- Ayarlar: `AutoGameProfile` (Ayarlar ekranında da var). Tepsi: **Bu oyunun profilini yeniden oluştur** (elle yazılmış profil `.bak` yedeklenir).
+- `Settings.Save` artık kilitli (panel ve arka plan işleri aynı dosyaya yazıyor). Model zinciri gönderimi ortak yönteme ayıklandı.
+
 ## v0.6.1 — 29.09.2026
 - **Uydurma yasağı:** Yetenek ağacı gibi adsız simgelerde model artık düğümlere kendi bilgisinden isim yapıştırmıyor
   ("Işığı Yansıt sol alttaki yeşil düğümdür" gibi). Adı ekranda olmayan bir yetenek sorulunca işaret koymuyor ve "imleci düğümün üstüne getir, adı sağ panelde çıkar" diyor.

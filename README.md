@@ -1,4 +1,4 @@
-# Oyun Asistanı (In-Game AI Companion) — v0.6.1
+# Oyun Asistanı (In-Game AI Companion) — v0.7.0
 
 Oyunu durdurmadan sesli soru sor, cevap sağ üst köşede şeffaf bir kutuda aksın.
 İlk hedef oyun: **Crimson Desert**. The Witcher 3, BG3, Elden Ring ve Cyberpunk için de ayar hazır.
@@ -62,6 +62,19 @@ Sesli sorular için `AnswerLength`, yazılı sohbet için `TypedAnswerLength` ay
 
 `AnswerMaxWords` sıfırdan büyükse kelime sınırını elle belirler. Cevap HUD kutusuna sığmazsa kutunun altında
 "Tamamı için Mouse 5'e çift dokun" yazar; tam metin sohbet panelindeki geçmişte durur. Kısa dışı modlarda kutu daha uzun (en çok 60 sn) kalır.
+
+## Oyun profilleri (otomatik)
+
+Her oyun için uygulama, o oyunu anlatan **spoilersiz bir profil** (`games/<Oyun>.md`) tutar ve her soruda modele arka plan olarak verir.
+Profili sen yazmak zorunda değilsin: profili olmayan bir oyunda ilk soru cevaplandıktan sonra uygulama, ekran görüntüsü, işlem adı ve pencere başlığından
+oyunu tanır, tam adını bulur ve arka planda (sormadan) profili oluşturur. Kutuda kısa bir "Oyun tanındı" bildirimi çıkar.
+
+- Profilde oyun, tür, temel mekanikler, **arayüzde görülen terimler** (ekrandaki dile göre) ve karıştırılmaması gereken benzer adlı oyunlar yazar.
+- `settings.json` → `Games` tablosuna otomatik giriş eklenir; oyunun **hafızası ve sohbeti** düzgün oyun adıyla tutulur (eski, pencere başlığından tahmin edilen ad varsa dosya yeni ada taşınır).
+- Oyun olmayan uygulamalar (tarayıcı, editör, sohbet…) elenir; modelin "oyun değil" dediği işlem bir daha denenmez (`games/ignored.json`).
+- Profil modelin kendi bilgisinden çıkar (ücretsiz katmanda web araması yok), bu yüzden yeni ya da az bilinen oyunlarda eksik/yanlış olabilir.
+  Dosyanın başında "otomatik oluşturuldu, doğrulanmadı" notu vardır; dilediğin gibi elle düzelt. Elle yazdığın profil, yeniden oluşturmada `.bak` olarak yedeklenir.
+- Kapatmak için Ayarlar → **Otomatik oyun profili**. Tepsi → **Bu oyunun profilini yeniden oluştur**. Oyun başına yalnızca 1 istek harcar.
 
 ## Ekranda işaret
 

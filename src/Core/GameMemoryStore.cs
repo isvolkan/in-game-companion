@@ -246,6 +246,32 @@ internal sealed class GameMemoryStore
         }
     }
 
+    /// <summary>
+    /// Oyunun adı sonradan düzeldiğinde (ör. pencere başlığından "Elden Ring") eski adla kaydedilmiş hafıza dosyasını yeni ada taşır.
+    /// Yeni adın zaten bir dosyası varsa dokunmaz.
+    /// </summary>
+    public void Rename(string from, string to)
+    {
+        if (string.IsNullOrWhiteSpace(from) || string.IsNullOrWhiteSpace(to) || string.Equals(from, to, StringComparison.OrdinalIgnoreCase)) return;
+        lock (_gate)
+        {
+            try
+            {
+                var oldPath = PathFor(from);
+                var newPath = PathFor(to);
+                if (!File.Exists(oldPath) || File.Exists(newPath)) return;
+                File.Move(oldPath, newPath);
+                _cache.Remove(from);
+                _cache.Remove(to);
+                var m = Get(to);
+                m.Game = to;
+                Save(m);
+                Log.Info($"Hafıza taşındı: '{from}' → '{to}'");
+            }
+            catch (Exception ex) { Log.Warn("Hafıza taşınamadı: " + ex.Message); }
+        }
+    }
+
     public void Clear(string game)
     {
         lock (_gate)

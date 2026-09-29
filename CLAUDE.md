@@ -109,6 +109,10 @@ src/Ai/LiveTranscriber.cs (v0.3) Gemini Live WebSocket ile konuşurken canlı ya
 src/Ui/MarkerOverlay.cs   (v0.4) "Şuna bas" işaretleri: tıklamayı geçiren küçük katmanlı pencere, nabız halkası + etiket
 ```
 
+v0.7 notları: `Core/GameProfiler.cs` — `Ensure(game, frameJpeg)` her cevaptan sonra çağrılır (profilsiz oyun + `AutoGameProfile` + kara liste/`ignored.json` + 30 dk deneme arası);
+`GeminiClient.GenerateProfileAsync` çıktısı "OYUN: <ad|YOK>" + metin (JSON değil, ayrıştırması sağlam). Yazım: `games/<Slug>.md` başlığı `<!-- otomatik-profil -->`; elle yazılan dosya ezilmeden önce `.bak`.
+`GameMemoryStore.Rename` eski tahmini adı yeni ada taşır. Testler için GİRDİ SİMÜLE ETME: kullanıcı oynuyor olabilir; izole harness (scratchpad/pt3) kullan.
+
 v0.6 notları: Kota ücretsiz katmanda model başına GÜNLÜK (gemini-3.8-flash: 20/gün). `GeminiClient.BuildChain` = Model → ModelChain → FallbackModel;
 `BlockModel` günlük kotada Pasifik gece yarısına kadar atlar. `Companion.ImprovePointsAsync`: (A) cevap "lite" modelden geldiyse `LocateOnFrameAsync` ile güçlü model tam karede
 yeniden konumlandırır; (B) yalnızca kutusu ≥ %4,5 genişlik olan hedefleri `LocateAsync` (kırpma) ile inceltir, sapma > max(36px, 1.3×kutu) ise reddeder.

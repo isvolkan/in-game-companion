@@ -48,7 +48,9 @@ internal static class Program
         var detector = new GameDetector(Current);
         var gemini = new GeminiClient(Current);
         var memory = new GameMemoryStore();
-        var companion = new Companion(Current, overlay, panel, markers, detector, gemini, memory);
+        var profiler = new GameProfiler(Current, gemini, memory, detector,
+            (title, body) => overlay.Invoke(o => { if (!o.IsBusyOrVisible) o.ShowInfo(title, body, 6); }));
+        var companion = new Companion(Current, overlay, panel, markers, detector, gemini, memory, profiler);
 
         MouseHook? hook = null;
         string hookConfig = "";   // kancanın kurulduğu tuş + swallow; değişince yeniden kurulur
@@ -122,6 +124,7 @@ internal static class Program
 
         tray.AddMenuItem("Sohbet / önceki sorular…", () => companion.OpenHistory());
         tray.AddMenuItem("Ayarlar…", () => companion.OpenHistory(settingsView: true));
+        tray.AddMenuItem("Bu oyunun profilini yeniden oluştur", () => companion.RegenerateProfile());
         tray.AddMenuItem("settings.json'u aç (gelişmiş)", () => OpenSettings());
         tray.AddMenuItem("Ayarları yeniden yükle", () => ReloadFromDisk(announce: true));
         tray.AddMenuItem("Hafıza klasörünü aç", () => { Directory.CreateDirectory(GameMemoryStore.Dir); OpenFile(GameMemoryStore.Dir); });

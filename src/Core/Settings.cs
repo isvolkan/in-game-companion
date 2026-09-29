@@ -98,6 +98,10 @@ internal sealed class Settings
     public string PointerRefineModel { get; set; } = "";
     /// <summary>Yedek modele / aramasız cevaba geçildiğinde kutuda küçük bir uyarı göster (log'a her zaman yazılır).</summary>
     public bool ShowModelNotice { get; set; } = false;
+    /// <summary>
+    /// Yeni/profili olmayan bir oyun algılanınca oyunu tanıyıp spoilersiz bir profil (games/*.md) kendiliğinden oluşturur (+1 istek, oyun başına bir kez).
+    /// </summary>
+    public bool AutoGameProfile { get; set; } = true;
     public int RequestTimeoutSeconds { get; set; } = 45;
 
     /// <summary>XButton2 (Mouse 5) | XButton1 (Mouse 4) | Middle</summary>
@@ -177,12 +181,19 @@ internal sealed class Settings
             !text.Contains("\"LiveTranscription\"", StringComparison.OrdinalIgnoreCase) ||
             !text.Contains("\"AnswerLength\"", StringComparison.OrdinalIgnoreCase) ||
             !text.Contains("\"PointerRefine\"", StringComparison.OrdinalIgnoreCase) ||
-            !text.Contains("\"ModelChain\"", StringComparison.OrdinalIgnoreCase))
+            !text.Contains("\"ModelChain\"", StringComparison.OrdinalIgnoreCase) ||
+            !text.Contains("\"AutoGameProfile\"", StringComparison.OrdinalIgnoreCase))
         {
             try { loaded.Save(); } catch { }
         }
         return loaded;
     }
 
-    public void Save() => File.WriteAllText(FilePath, JsonSerializer.Serialize(this, Json));
+    /// <summary>Panel, profil oluşturucu ve diğer arka plan işleri aynı dosyaya yazdığı için yazımlar sıralanır.</summary>
+    public static readonly object SaveLock = new();
+
+    public void Save()
+    {
+        lock (SaveLock) File.WriteAllText(FilePath, JsonSerializer.Serialize(this, Json));
+    }
 }

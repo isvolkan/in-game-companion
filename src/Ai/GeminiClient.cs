@@ -422,7 +422,23 @@ internal sealed class GeminiClient
         };
         var payload = body.ToJsonString();
 
-        // Model sırası: (tercih edilen) → zincirdeki güçlü modeller → (kırpmada) hafif modeller. Kotası dolanlar atlanır.
+        var res = await SendViaChainAsync(payload, strongOnly, 16, ct, s.PointerRefineModel).ConfigureAwait(false);
+        if (res == null) return new double[count][];
+        Log.Info($"  Konum sorgusu: {res.Value.Model}");
+        return ParseBoxes(res.Value.Json, count);
+    }
+
+    /// <summary>
+    /// Yükü sırayla uygun modellere gönderir: (tercih edilen) → zincirdeki güçlü modeller → (strongOnly değilse) hafif modeller.
+    /// Kotası dolanlar atlanır. İlk başarılı yanıtı ve modelini döner; hiç uygun model yoksa null, hepsi başarısızsa son hata.
+    /// </summary>
+    private async Task<(string Json, string Model)?> SendViaChainAsync(string payload, bool strongOnly, int timeoutSeconds,
+                                                                       CancellationToken ct, string? preferred = null)
+    {
+        var s = _settings();
+        var key = s.ResolvedApiKey;
+        if (string.IsNullOrEmpty(key)) throw new InvalidOperationException("API anahtarı yok");
+
         var models = new List<string>();
         void Add(string? m)
         {
@@ -430,14 +446,14 @@ internal sealed class GeminiClient
             if (string.IsNullOrEmpty(m) || (strongOnly && IsLite(m)) || IsBlocked(m)) return;
             if (!models.Exists(x => string.Equals(x, m, StringComparison.OrdinalIgnoreCase))) models.Add(m);
         }
-        Add(s.PointerRefineModel);
+        Add(preferred);
         var chain = BuildChain(s);
         foreach (var m in chain) if (!IsLite(m)) Add(m);
         foreach (var m in chain) if (IsLite(m)) Add(m);
-        if (models.Count == 0) return new double[count][];
+        if (models.Count == 0) return null;
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(16));
+        timeout.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
         GeminiException? last = null;
         foreach (var model in models)
         {
@@ -450,18 +466,65 @@ internal sealed class GeminiClient
                 req.Headers.Add("x-goog-api-key", key);
                 using var resp = await Http.SendAsync(req, timeout.Token).ConfigureAwait(false);
                 var json = await resp.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
-                if (resp.IsSuccessStatusCode)
-                {
-                    Log.Info($"  Konum sorgusu: {model}");
-                    return ParseBoxes(json, count);
-                }
+                if (resp.IsSuccessStatusCode) return (json, model);
                 last = new GeminiException((int)resp.StatusCode, ExtractError(json));
                 if ((int)resp.StatusCode == 429) { BlockModel(model, last.Message); break; }   // kota: aynı modeli tekrar deneme
                 if ((int)resp.StatusCode >= 500) { await Task.Delay(500, timeout.Token).ConfigureAwait(false); continue; }
                 break; // 4xx: bu modelle olmaz, sıradakine geç
             }
         }
-        throw last ?? new GeminiException(0, "Konum sorgusu başarısız");
+        throw last ?? new GeminiException(0, "Model sorgusu başarısız");
+    }
+
+    /// <summary>
+    /// Yeni bir oyun için profil ister (güçlü model öncelikli). Yanıt: ilk satır "OYUN: &lt;ad&gt;" (oyun değilse "OYUN: YOK"),
+    /// sonrası spoilersiz profil metni.
+    /// </summary>
+    public async Task<string> GenerateProfileAsync(string processName, string windowTitle, byte[] frameJpeg, CancellationToken ct)
+    {
+        var instruction = $"""
+Bir oyun yardımcı uygulaması, ön plandaki pencereyi aşağıdaki bilgi ve ekran görüntüsüyle sana gösteriyor.
+İşlem adı: {processName}.exe
+Pencere başlığı: "{windowTitle}"
+
+Görev:
+1) Bu bir VİDEO OYUNU mu? (Tarayıcı, editör, sohbet, medya oynatıcı, masaüstü vb. ise oyun DEĞİLDİR.)
+2) Oyunsa tam adını belirle (işlem adı, pencere başlığı ve ekrandaki arayüzden).
+3) O oyun için spoilersiz bir profil yaz.
+
+ÇIKTI BİÇİMİ (kesin):
+İlk satır: "OYUN: <oyunun tam adı>"  — oyun değilse yalnızca "OYUN: YOK" yaz ve dur.
+Sonraki satırlardan itibaren profil (düz metin/kısa Markdown, en fazla ~230 kelime), şu başlıklarla:
+- Oyun: ad, yapımcı, çıkış yılı, tür (yalnızca emin olduğun kadarı)
+- Dünya ve oynanış: spoilersiz, 2-3 cümle
+- Temel mekanikler: envanter, harita, yetenek/karakter gelişimi, üretim, savaş gibi soru sorulabilecek sistemler
+- Arayüz dili ve terimler: ekran görüntüsündeki arayüz hangi dildeyse o dilde menü/terim adlarını yaz; oyuncu bunları ekranda aynen görür
+- Karıştırılmaması gerekenler: benzer adlı başka oyun/seri varsa uyar
+KURALLAR: Yalnızca EMİN olduğun bilgiyi yaz. Oyunu tanımıyorsan ya da yeni çıkmışsa "Bilgi sınırlı" de ve yalnızca ekranda gördüklerini yaz. Hikâye olayları, karakter kaderleri, sürprizler, bölüm sonları YASAK. Uydurma yok.
+""";
+        var parts = new JsonArray
+        {
+            InlineData("image/jpeg", frameJpeg),
+            new JsonObject { ["text"] = instruction },
+        };
+        var body = new JsonObject
+        {
+            ["contents"] = new JsonArray(new JsonObject { ["role"] = "user", ["parts"] = parts }),
+            ["generationConfig"] = new JsonObject
+            {
+                ["maxOutputTokens"] = 1500,
+                ["thinkingConfig"] = new JsonObject { ["thinkingLevel"] = "low" },
+            },
+        };
+        var res = await SendViaChainAsync(body.ToJsonString(), strongOnly: false, timeoutSeconds: 60, ct).ConfigureAwait(false)
+                  ?? throw new GeminiException(429, "Kullanılabilir model yok (kotalar dolu)");
+        Log.Info($"  Oyun profili modeli: {res.Model}");
+        var partsOut = JsonNode.Parse(res.Json)?["candidates"]?[0]?["content"]?["parts"]?.AsArray();
+        var sb = new StringBuilder();
+        if (partsOut != null)
+            foreach (var p in partsOut)
+                if (p?["thought"]?.GetValue<bool>() != true) sb.Append(p?["text"]?.GetValue<string>());
+        return sb.ToString();
     }
 
     private static double[]?[] ParseBoxes(string responseJson, int count)
