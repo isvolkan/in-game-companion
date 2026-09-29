@@ -80,6 +80,34 @@ internal static class ScreenCapture
         }
     }
 
+    /// <summary>
+    /// Ekrandan kare bir bölgeyi (fiziksel piksel) o anki görüntüden alır, outSize×outSize'a büyütüp JPEG'e kodlar.
+    /// İşaret konumunu hassaslaştırmak için: küçük simgeler büyütülünce model çok daha isabetli gösterir.
+    /// </summary>
+    public static byte[] CaptureRegionJpeg(int left, int top, int size, int outSize, int quality)
+    {
+        IntPtr screenDc = Win32.GetDC(IntPtr.Zero);
+        IntPtr memDc = Win32.CreateCompatibleDC(screenDc);
+        IntPtr dib = Win32.CreateDib32(screenDc, size, size, out IntPtr bits);
+        IntPtr old = Win32.SelectObject(memDc, dib);
+        IntPtr bmp = IntPtr.Zero;
+        try
+        {
+            if (!Win32.BitBlt(memDc, 0, 0, size, size, screenDc, left, top, Win32.SRCCOPY))
+                throw new InvalidOperationException("BitBlt (bölge) başarısız: " + Marshal.GetLastWin32Error());
+            Gdip.Check(Gdip.GdipCreateBitmapFromScan0(size, size, size * 4, Gdip.PixelFormat32bppRGB, bits, out bmp), "RegionScan0");
+            return ScaleAndEncode(bmp, outSize, outSize, quality);
+        }
+        finally
+        {
+            if (bmp != IntPtr.Zero) Gdip.GdipDisposeImage(bmp);
+            Win32.SelectObject(memDc, old);
+            Win32.DeleteObject(dib);
+            Win32.DeleteDC(memDc);
+            Win32.ReleaseDC(IntPtr.Zero, screenDc);
+        }
+    }
+
     private static byte[] ScaleAndEncode(IntPtr src, int tw, int th, int quality)
     {
         Gdip.Check(Gdip.GdipCreateBitmapFromScan0(tw, th, 0, Gdip.PixelFormat24bppRGB, IntPtr.Zero, out IntPtr dst), "CreateTarget");

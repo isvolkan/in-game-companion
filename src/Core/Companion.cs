@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading;
@@ -190,7 +191,7 @@ internal sealed class Companion
     /// Önceki sorular panelini açar: ön plandaki oyunun geçmişi; boşsa bu oturumda son soru sorulan oyun,
     /// o da yoksa hafızası en son güncellenen oyun. Herhangi bir iş parçacığından çağrılabilir.
     /// </summary>
-    public void OpenHistory()
+    public void OpenHistory(bool settingsView = false)
     {
         var game = _game?.GameName;
         var items = string.IsNullOrEmpty(game) ? Array.Empty<MemoryExchange>() : _memory.History(game);
@@ -213,7 +214,7 @@ internal sealed class Companion
         _overlay.Invoke(o =>
         {
             o.HideNow();
-            _panel.Open(name, items, monitor, fg);
+            _panel.Open(name, items, monitor, fg, settingsView);
         });
     }
 
@@ -291,10 +292,10 @@ internal sealed class Companion
             {
                 var sources = result.Sources.ToList();
                 MemoryUpdate? upd = memOn ? SaveExchange(game.GameName, parser, answer, parser.Question, s) : null;
-                var footerText = string.Join(" · ", new[] { result.Notice, upd?.Footer }.Where(x => !string.IsNullOrEmpty(x)));
+                var footerText = string.Join(" · ", new[] { s.ShowModelNotice ? result.Notice : null, upd?.Footer }.Where(x => !string.IsNullOrEmpty(x)));
                 var footer = footerText.Length == 0 ? null : footerText;
                 _overlay.Invoke(o => o.Complete(sources, footer));
-                ShowPoints(parser, cap, s);
+                ShowPoints(id, ct, parser, cap, s);
                 if (upd != null && (upd.NewQuest != null || upd.NewRegion != null))
                     Log.Info($"  Hafıza: yeni görev={upd.NewQuest ?? "-"}, yeni bölge={upd.NewRegion ?? "-"}");
             }
@@ -347,12 +348,71 @@ internal sealed class Companion
     }
 
     /// <summary>Modelin @@POINT satırları varsa ekranda işaret gösterir (yakalama karesine göre ekran pikseline çevrilir).</summary>
-    private void ShowPoints(ResponseParser parser, CaptureResult cap, Settings s)
+    private void ShowPoints(int id, CancellationToken ct, ResponseParser parser, CaptureResult cap, Settings s)
     {
         if (!s.PointerMarkers) return;
         var pts = parser.ParsePoints();
         if (pts.Count == 0) return;
         _overlay.Invoke(_ => _markers.Show(pts, cap.ScreenLeft, cap.ScreenTop, cap.SourceWidth, cap.SourceHeight, s.MarkerSeconds));
+        if (s.PointerRefine) _ = RefinePointsAsync(id, ct, pts, cap, s);
+    }
+
+    /// <summary>
+    /// İşaret konumunu hassaslaştırır: her ilk tahminin çevresinden kare bir bölgeyi (kare genişliğinin ~%22'si) o anki
+    /// ekrandan alıp büyütür ve tek toplu istekle modelden nesnenin sıkı kutusunu ister. Küçük simgelerde sapmayı
+    /// birkaç pikselde tutar. Başarısız olursa ilk tahmin kalır; halkalar yeni yere yumuşakça kayar.
+    /// </summary>
+    private async Task RefinePointsAsync(int id, CancellationToken ct, IReadOnlyList<PointMark> pts, CaptureResult cap, Settings s)
+    {
+        try
+        {
+            var sw = Stopwatch.StartNew();
+            int W = cap.SourceWidth, H = cap.SourceHeight;
+            int cs = (int)Math.Clamp(W * 0.22, 240, Math.Min(W, H));
+            var origins = new (int x, int y)[pts.Count];
+            var crops = new List<(string, byte[])>();
+            for (int i = 0; i < pts.Count; i++)
+            {
+                int cx = (int)(pts[i].X / 1000 * W), cy = (int)(pts[i].Y / 1000 * H);
+                int ox = Math.Clamp(cx - cs / 2, 0, W - cs), oy = Math.Clamp(cy - cs / 2, 0, H - cs);
+                origins[i] = (ox, oy);
+                var jpg = await Task.Run(() => ScreenCapture.CaptureRegionJpeg(cap.ScreenLeft + ox, cap.ScreenTop + oy, cs, 768, 88), ct).ConfigureAwait(false);
+                crops.Add((string.IsNullOrWhiteSpace(pts[i].Label) ? "işaretlenen nesne" : pts[i].Label, jpg));
+            }
+
+            var boxes = await _gemini.LocateAsync(crops, ct).ConfigureAwait(false);
+            if (id != Volatile.Read(ref _session)) return;
+
+            var updated = new List<PointMark>();
+            int changed = 0;
+            double drift = 0;
+            for (int i = 0; i < pts.Count; i++)
+            {
+                var p = pts[i];
+                var b = boxes[i];
+                if (b != null)
+                {
+                    double bw = (b[3] - b[1]) / 1000 * cs, bh = (b[2] - b[0]) / 1000 * cs;
+                    double px = origins[i].x + (b[1] + b[3]) / 2 / 1000 * cs, py = origins[i].y + (b[0] + b[2]) / 2 / 1000 * cs;
+                    double dist = Math.Sqrt(Math.Pow(px - p.X / 1000 * W, 2) + Math.Pow(py - p.Y / 1000 * H, 2));
+                    // Kutu kırpmanın neredeyse tamamıysa ya da ilk tahminden çok uzaksa güvenme
+                    if (bw < cs * 0.85 && bh < cs * 0.85 && dist <= cs * 0.5)
+                    {
+                        updated.Add(new PointMark(px / W * 1000, py / H * 1000, p.Label, p.Step, bw / W * 1000, bh / H * 1000));
+                        changed++;
+                        drift += dist;
+                        continue;
+                    }
+                }
+                updated.Add(p);
+            }
+            Log.Info($"  İşaret ince ayar: {changed}/{pts.Count} hedef, ort. kayma {(changed > 0 ? drift / changed : 0):F0}px, {sw.ElapsedMilliseconds}ms");
+            if (changed > 0 && id == Volatile.Read(ref _session))
+                _overlay.Invoke(_ => _markers.Update(updated));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) { Log.Warn("İşaret ince ayarı zaman aşımına uğradı; ilk tahmin kaldı"); }
+        catch (Exception ex) { Log.Warn("İşaret ince ayarı yapılamadı: " + ex.Message); }
     }
 
     // ------------------------------------------------------------------ Yazılı soru (sohbet paneli)
@@ -435,9 +495,9 @@ internal sealed class Companion
             else
             {
                 if (memOn) SaveExchange(game.GameName, parser, answer, string.IsNullOrWhiteSpace(parser.Question) ? text : parser.Question, s);
-                if (result.Notice != null) Ui(p => p.AppendPending("\n\n" + result.Notice));
+                if (s.ShowModelNotice && result.Notice != null) Ui(p => p.AppendPending("\n\n" + result.Notice));
                 Ui(p => p.EndPending(null));
-                ShowPoints(parser, cap, s);
+                ShowPoints(id, ct, parser, cap, s);
             }
 
             if (result.Notice != null) Log.Warn("  Uyarı: " + result.Notice);

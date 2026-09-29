@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -7,6 +8,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using InGameCompanion.Core;
@@ -80,6 +82,24 @@ internal sealed class GeminiClient
     /// her soruda boşuna 429 turu atılmasın.
     /// </summary>
     private long _searchBlockedUntilTicks;
+
+    /// <summary>
+    /// Kotası dolan (429) modeller bir süre atlanır: yanıttaki "retry in Ns" süresi kadar (yoksa 5 dk).
+    /// Böylece her soruda önce dolu modele gidip vakit kaybedilmez.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, long> _modelBlockedUntil = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool IsBlocked(string model) => _modelBlockedUntil.TryGetValue(model, out var t) && DateTime.UtcNow.Ticks < t;
+
+    private void BlockModel(string model, string message)
+    {
+        double secs = 300;
+        var m = Regex.Match(message ?? "", @"retry in ([0-9]+(?:\.[0-9]+)?)s", RegexOptions.IgnoreCase);
+        if (m.Success && double.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d))
+            secs = Math.Clamp(d + 1, 5, 900);
+        _modelBlockedUntil[model] = (DateTime.UtcNow + TimeSpan.FromSeconds(secs)).Ticks;
+        Log.Warn($"{model} kotası dolu; {secs:F0} sn boyunca atlanacak");
+    }
     private static readonly TimeSpan SearchBlockDuration = TimeSpan.FromMinutes(30);
 
     /// <summary>
@@ -107,6 +127,12 @@ internal sealed class GeminiClient
         bool search = s.UseWebSearch && DateTime.UtcNow.Ticks >= Interlocked.Read(ref _searchBlockedUntilTicks);
         var notices = new List<string>();
         if (s.UseWebSearch && !search) notices.Add("Web araması kotası dolu, aramasız cevaplandı.");
+        bool sameModelRetried = false;
+        if (fallback != null && !string.Equals(model, fallback, StringComparison.OrdinalIgnoreCase) && IsBlocked(model))
+        {
+            notices.Add($"{model} kotası dolu, {fallback} ile cevaplandı.");
+            model = fallback;
+        }
 
         while (true)
         {
@@ -123,11 +149,20 @@ internal sealed class GeminiClient
                 notices.Add("Web araması kotası dolu, aramasız cevaplandı.");
                 Retrying();
             }
+            catch (GeminiException ex) when (ex.Status >= 500 && !sameModelRetried)
+            {
+                // 503 "yoğun talep" genelde birkaç saniyelik: önce aynı modeli bir kez daha dene (yedek model daha zayıf)
+                sameModelRetried = true;
+                Log.Warn($"Gemini {ex.Status} ({model}): {ex.Message} → aynı model bir kez daha deneniyor");
+                await Task.Delay(700, ct).ConfigureAwait(false);
+                Retrying();
+            }
             catch (GeminiException ex) when ((ex.Status == 429 || ex.Status == 404 || ex.Status >= 500)
                                              && fallback != null
                                              && !string.Equals(model, fallback, StringComparison.OrdinalIgnoreCase))
             {
                 Log.Warn($"Gemini {ex.Status} ({model}): {ex.Message} → yedek model {fallback}");
+                if (ex.Status == 429) BlockModel(model, ex.Message);
                 notices.Add($"{model} kullanılamadı ({ex.Status}), yedek model {fallback} ile cevaplandı.");
                 model = fallback;
                 Retrying();
@@ -240,6 +275,102 @@ internal sealed class GeminiClient
             throw new GeminiException(0, $"Model yanıt üretmedi (finishReason={finishReason}).");
 
         return new AskResult(text.ToString(), sources, queries, promptTok, outTok, thoughtTok, firstTokenMs, sw.ElapsedMilliseconds, model);
+    }
+
+    /// <summary>
+    /// Kırpmalarda aranan nesnelerin sınırlayıcı kutusunu ister (tek istekte toplu). Her kırpma için
+    /// [ymin,xmin,ymax,xmax] (0-1000, o kırpmaya göre) ya da bulunamadıysa null döner. 5xx/429'da bir kez tekrar dener,
+    /// sonra yedek modele geçer.
+    /// </summary>
+    public async Task<double[]?[]> LocateAsync(IReadOnlyList<(string Label, byte[] Jpeg)> crops, CancellationToken ct)
+    {
+        var s = _settings();
+        var key = s.ResolvedApiKey;
+        if (string.IsNullOrEmpty(key)) throw new InvalidOperationException("API anahtarı yok");
+
+        var parts = new JsonArray
+        {
+            new JsonObject { ["text"] = "Aşağıdaki her görüntü, bir oyun ekranından alınmış küçük bir kırpma. Her kırpma için aranan nesneyi bul; nesne büyük olasılıkla kırpmanın merkezine yakındır." },
+        };
+        for (int i = 0; i < crops.Count; i++)
+        {
+            parts.Add(new JsonObject { ["text"] = $"Kırpma {i + 1} — aranan nesne: \"{crops[i].Label}\"" });
+            parts.Add(InlineData("image/jpeg", crops[i].Jpeg));
+        }
+        parts.Add(new JsonObject
+        {
+            ["text"] = "Her kırpma için aranan nesnenin SIKI sınırlayıcı kutusunu ver (yalnızca nesnenin kendisi, çevresi değil). " +
+                       "Sadece JSON dizisi döndür: [{\"i\":1,\"box_2d\":[ymin,xmin,ymax,xmax]},{\"i\":2,\"none\":true}]. " +
+                       "Koordinatlar 0-1000 ölçeğinde ve İLGİLİ KIRPMAYA göre (x soldan sağa, y yukarıdan aşağı). " +
+                       "Nesne o kırpmada yoksa ya da emin değilsen none:true yaz; tahmin etme.",
+        });
+        var body = new JsonObject
+        {
+            ["contents"] = new JsonArray(new JsonObject { ["role"] = "user", ["parts"] = parts }),
+            ["generationConfig"] = new JsonObject
+            {
+                ["maxOutputTokens"] = 600,
+                ["thinkingConfig"] = new JsonObject { ["thinkingLevel"] = "low" },
+            },
+        };
+        var payload = body.ToJsonString();
+
+        var models = new List<string>();
+        foreach (var m in new[] { s.PointerRefineModel, s.Model, s.FallbackModel })
+            if (!string.IsNullOrWhiteSpace(m) && !models.Exists(x => string.Equals(x, m.Trim(), StringComparison.OrdinalIgnoreCase))
+                && !IsBlocked(m.Trim()))
+                models.Add(m.Trim());
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(14));
+        GeminiException? last = null;
+        foreach (var model in models)
+        {
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}{Uri.EscapeDataString(model)}:generateContent")
+                {
+                    Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+                };
+                req.Headers.Add("x-goog-api-key", key);
+                using var resp = await Http.SendAsync(req, timeout.Token).ConfigureAwait(false);
+                var json = await resp.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+                if (resp.IsSuccessStatusCode) return ParseBoxes(json, crops.Count);
+                last = new GeminiException((int)resp.StatusCode, ExtractError(json));
+                if ((int)resp.StatusCode == 429) { BlockModel(model, last.Message); break; }   // kota: aynı modeli tekrar deneme
+                if ((int)resp.StatusCode >= 500) { await Task.Delay(500, timeout.Token).ConfigureAwait(false); continue; }
+                break; // 4xx: bu modelle olmaz, sıradakine geç
+            }
+        }
+        throw last ?? new GeminiException(0, "Konum sorgusu başarısız");
+    }
+
+    private static double[]?[] ParseBoxes(string responseJson, int count)
+    {
+        var result = new double[count][];
+        var parts = JsonNode.Parse(responseJson)?["candidates"]?[0]?["content"]?["parts"]?.AsArray();
+        var sb = new StringBuilder();
+        if (parts != null)
+            foreach (var p in parts)
+                if (p?["thought"]?.GetValue<bool>() != true) sb.Append(p?["text"]?.GetValue<string>());
+        var text = sb.ToString();
+        int a = text.IndexOf('['), b = text.LastIndexOf(']');
+        if (a < 0 || b <= a) return result!;
+        try
+        {
+            if (JsonNode.Parse(text[a..(b + 1)]) is not JsonArray arr) return result!;
+            foreach (var item in arr)
+            {
+                if (item is not JsonObject o) continue;
+                int i = (int)(o["i"]?.GetValue<double>() ?? 0) - 1;
+                if (i < 0 || i >= count || o["box_2d"] is not JsonArray box || box.Count != 4) continue;
+                var v = new double[4];
+                for (int k = 0; k < 4; k++) v[k] = box[k]!.GetValue<double>();
+                if (v[2] > v[0] && v[3] > v[1] && v.All(x => x >= 0 && x <= 1000)) result[i] = v;
+            }
+        }
+        catch { }
+        return result!;
     }
 
     /// <summary>Tek seferlik, akışsız metin üretimi (hafıza özetleme gibi arka plan işleri için).</summary>

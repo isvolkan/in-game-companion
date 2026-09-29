@@ -9,7 +9,8 @@ using InGameCompanion.Native;
 namespace InGameCompanion.Ui;
 
 /// <summary>
-/// "Şuna bas, şuraya git" işaretleri: modelin gösterdiği noktalara nabız gibi atan halka + etiket çizer.
+/// "Şuna bas, şuraya git" işaretleri: modelin gösterdiği hedeflerin çevresine nabız gibi atan halka + etiket çizer.
+/// Halkanın boyu hedefin kutusuna uyar. Konum sonradan hassaslaştırılırsa (<see cref="Update"/>) halka yumuşakça kayar.
 /// HUD gibi tıklamayı arkaya geçirir, odağı çalmaz ve ekran yakalamalarına girmez.
 /// Yalnızca işaretlerin çevresini kaplayan küçük bir pencere kullanır. Tüm üyeler UI iş parçacığında çalışır.
 /// </summary>
@@ -26,10 +27,18 @@ internal sealed class MarkerOverlay : IDisposable
     private readonly List<TextRenderer.Op> _ops = new();
     private IntPtr _hwnd;
 
-    private sealed record Mark(int X, int Y, string Label, int Step);
+    private sealed class Mark
+    {
+        public double X, Y, R;          // şu anki (ekran pikseli, halka yarıçapı)
+        public double TX, TY, TR;       // hedef
+        public string Label = "";
+        public int Step;
+    }
+
     private List<Mark> _marks = new();
     private bool _numbered;
-    private DateTime _start, _until, _lastTopmost;
+    private int _left, _top, _fw, _fh;  // yakalanan karenin ekrandaki konumu/boyu
+    private DateTime _start, _until, _lastTopmost, _lastTick;
     private double _scale = 1;
     private Win32.RECT _mon;
     private TextRenderer.Fonts? _fonts;
@@ -93,18 +102,16 @@ internal sealed class MarkerOverlay : IDisposable
     // ------------------------------------------------------------------ API
 
     /// <summary>
-    /// Noktaları (0-1000 ölçeği, yakalanan karenin sol üstüne göre) ekran pikseline çevirip gösterir.
+    /// Hedefleri (0-1000 ölçeği, yakalanan karenin sol üstüne göre) ekran pikseline çevirip gösterir.
     /// <paramref name="left"/>/<paramref name="top"/>/<paramref name="width"/>/<paramref name="height"/>: yakalanan alanın ekrandaki konumu.
     /// </summary>
     public void Show(IReadOnlyList<PointMark> points, int left, int top, int width, int height, double seconds)
     {
         if (points.Count == 0 || width < 16 || height < 16) { Hide(); return; }
+        _left = left; _top = top; _fw = width; _fh = height;
 
-        var marks = new List<Mark>();
-        foreach (var p in points)
-            marks.Add(new Mark(left + (int)Math.Round(p.X / 1000.0 * width), top + (int)Math.Round(p.Y / 1000.0 * height), p.Label, p.Step));
-
-        var mon = Win32.MonitorFromPoint(new Win32.POINT(marks[0].X, marks[0].Y), Win32.MONITOR_DEFAULTTONEAREST);
+        var first = ToScreen(points[0]);
+        var mon = Win32.MonitorFromPoint(new Win32.POINT((int)first.x, (int)first.y), Win32.MONITOR_DEFAULTTONEAREST);
         _mon = Win32.GetMonitorRect(mon);
         double scale = Win32.GetMonitorScale(mon);
         if (_fonts == null || Math.Abs(scale - _scale) > 0.001)
@@ -114,9 +121,15 @@ internal sealed class MarkerOverlay : IDisposable
             _scale = scale;
         }
 
+        var marks = new List<Mark>();
+        foreach (var p in points)
+        {
+            var (x, y, r) = ToScreen(p);
+            marks.Add(new Mark { X = x, Y = y, R = r, TX = x, TY = y, TR = r, Label = p.Label, Step = p.Step });
+        }
         _marks = marks;
         _numbered = marks.Count > 1;
-        _start = DateTime.UtcNow;
+        _start = _lastTick = DateTime.UtcNow;
         _until = _start.AddSeconds(Math.Clamp(seconds, 2, 120));
         if (!_timerOn)
         {
@@ -130,7 +143,19 @@ internal sealed class MarkerOverlay : IDisposable
             _visible = true;
         }
         Keep();
-        Log.Info("İşaret: " + string.Join(" → ", marks.ConvertAll(m => $"{m.Step}:{m.Label}@{m.X},{m.Y}")));
+        Log.Info("İşaret: " + string.Join(" → ", marks.ConvertAll(m => $"{m.Step}:{m.Label}@{m.TX:F0},{m.TY:F0}")));
+    }
+
+    /// <summary>Hassaslaştırılmış konumlar: aynı sırayla, halkalar yeni yere yumuşakça kayar. Gösterim bitmişse yok sayılır.</summary>
+    public void Update(IReadOnlyList<PointMark> points)
+    {
+        if (!_visible || points.Count != _marks.Count) return;
+        for (int i = 0; i < points.Count; i++)
+        {
+            var (x, y, r) = ToScreen(points[i]);
+            _marks[i].TX = x; _marks[i].TY = y; _marks[i].TR = r;
+        }
+        Log.Info("İşaret güncellendi: " + string.Join(" → ", _marks.ConvertAll(m => $"{m.Step}:{m.Label}@{m.TX:F0},{m.TY:F0}")));
     }
 
     public void Hide()
@@ -138,6 +163,21 @@ internal sealed class MarkerOverlay : IDisposable
         if (_timerOn) { Win32.KillTimer(_hwnd, (UIntPtr)TimerId); _timerOn = false; }
         if (_visible) { Win32.ShowWindow(_hwnd, Win32.SW_HIDE); _visible = false; }
         _marks = new();
+    }
+
+    /// <summary>Kare içi 0-1000 → ekran pikseli merkez + halka yarıçapı (kutu biliniyorsa kutuya uyar).</summary>
+    private (double x, double y, double r) ToScreen(PointMark p)
+    {
+        double s = Win32.GetMonitorScale(Win32.MonitorFromPoint(
+            new Win32.POINT(_left + (int)(p.X / 1000.0 * _fw), _top + (int)(p.Y / 1000.0 * _fh)), Win32.MONITOR_DEFAULTTONEAREST));
+        double x = _left + p.X / 1000.0 * _fw, y = _top + p.Y / 1000.0 * _fh;
+        double r = 34 * s;
+        if (p.W > 0 && p.H > 0)
+        {
+            double boxPx = Math.Max(p.W / 1000.0 * _fw, p.H / 1000.0 * _fh);
+            r = Math.Clamp(boxPx / 2 * 1.15 + 9 * s, 24 * s, 110 * s);
+        }
+        return (x, y, r);
     }
 
     // ------------------------------------------------------------------ Çizim
@@ -153,6 +193,13 @@ internal sealed class MarkerOverlay : IDisposable
     {
         var now = DateTime.UtcNow;
         if (now >= _until || _marks.Count == 0) { Hide(); return; }
+        double dt = Math.Min(0.1, (now - _lastTick).TotalSeconds);
+        _lastTick = now;
+        double k = 1 - Math.Exp(-dt * 12);   // ~150 ms'de oturur
+        foreach (var m in _marks)
+        {
+            m.X += (m.TX - m.X) * k; m.Y += (m.TY - m.Y) * k; m.R += (m.TR - m.R) * k;
+        }
         if ((now - _lastTopmost).TotalMilliseconds > 1500) Keep();
         Render(now);
     }
@@ -200,22 +247,24 @@ internal sealed class MarkerOverlay : IDisposable
         float s = (float)_scale;
         var o = _settings().Overlay;
         uint accent = ParseHex(o.AccentColor, 0xD2463C);
-        float R = 36 * s;                       // halka yarıçapı (modelin konum hatasını tolere eder)
         float badge = 22 * s;
         float padX = 10 * s, padY = 4 * s;
 
-        // Etiket genişlikleri → pencere sınırları
+        // Etiket genişlikleri → pencere sınırları (hedef konumları da kapsa ki kayarken kırpılmasın)
         var labelW = new float[_marks.Count];
         int minX = int.MaxValue, minY = int.MaxValue, maxX = int.MinValue, maxY = int.MinValue;
         for (int i = 0; i < _marks.Count; i++)
         {
             var m = _marks[i];
             labelW[i] = string.IsNullOrEmpty(m.Label) ? 0 : _text.Measure(f.SmallBold, m.Label) + padX * 2;
-            float ext = R * 2;
-            minX = Math.Min(minX, (int)(m.X - ext - labelW[i]));
-            maxX = Math.Max(maxX, (int)(m.X + ext + labelW[i]));
-            minY = Math.Min(minY, (int)(m.Y - ext));
-            maxY = Math.Max(maxY, (int)(m.Y + ext));
+            float ext = (float)Math.Max(m.R, m.TR) * 2;
+            foreach (var (px, py) in new[] { (m.X, m.Y), (m.TX, m.TY) })
+            {
+                minX = Math.Min(minX, (int)(px - ext - labelW[i]));
+                maxX = Math.Max(maxX, (int)(px + ext + labelW[i]));
+                minY = Math.Min(minY, (int)(py - ext));
+                maxY = Math.Max(maxY, (int)(py + ext));
+            }
         }
         minX = Math.Max(minX, _mon.Left); minY = Math.Max(minY, _mon.Top);
         maxX = Math.Min(maxX, _mon.Right); maxY = Math.Min(maxY, _mon.Bottom);
@@ -232,19 +281,20 @@ internal sealed class MarkerOverlay : IDisposable
         for (int i = 0; i < _marks.Count; i++)
         {
             var m = _marks[i];
-            float cx = m.X - minX, cy = m.Y - minY;
+            float R = (float)m.R;
+            float cx = (float)(m.X - minX), cy = (float)(m.Y - minY);
 
             // Genişleyip sönen dış halka
-            float r2 = R * (1f + (float)phase * 0.8f);
+            float r2 = R * (1f + (float)phase * 0.6f);
             DrawRing(cx, cy, r2, 3 * s, Argb((int)((1 - phase) * 210), accent), Argb((int)((1 - phase) * 90), 0x000000), 5 * s);
             // Ana halka (nabız)
-            float r1 = R * (0.86f + 0.14f * (float)pulse);
+            float r1 = R * (0.9f + 0.1f * (float)pulse);
             DrawRing(cx, cy, r1, 4 * s, Argb(255, accent), Argb(170, 0x000000), 7.5f * s);
 
             // Adım rozeti (halkanın sol üstünde)
             if (_numbered)
             {
-                float bx = cx - R * 0.72f - badge / 2, by = cy - R * 0.72f - badge / 2;
+                float bx = cx - r1 * 0.72f - badge / 2, by = cy - r1 * 0.72f - badge / 2;
                 FillCircle(bx, by, badge, Argb(255, accent));
                 string n = m.Step.ToString(CultureInfo.InvariantCulture);
                 float nw = _text.Measure(f.SmallBold, n);
@@ -255,8 +305,8 @@ internal sealed class MarkerOverlay : IDisposable
             if (labelW[i] > 0)
             {
                 float lh = f.SmallLine + padY * 2;
-                float lx = cx + R * 1.2f;
-                if (lx + labelW[i] > W) lx = cx - R * 1.2f - labelW[i];
+                float lx = cx + r1 + 6 * s;
+                if (lx + labelW[i] > W) lx = cx - r1 - 6 * s - labelW[i];
                 float ly = cy - lh / 2;
                 FillRoundRect(lx, ly, labelW[i], lh, lh / 2, Argb(225, 0x0D1015));
                 _ops.Add(new TextRenderer.Op { Text = m.Label, X = lx + padX, Y = ly + padY, Font = f.SmallBold, Color = 0xFFFFFFFF, LineHeight = f.SmallLine });
@@ -265,9 +315,8 @@ internal sealed class MarkerOverlay : IDisposable
         _text.Draw(_g, _ops, float.MaxValue);
 
         // Belirme / sönme
-        double alpha = 1;
         double fin = t / 0.15, fout = (_until - now).TotalSeconds / 0.5;
-        alpha = Math.Clamp(Math.Min(fin, fout), 0, 1);
+        double alpha = Math.Clamp(Math.Min(fin, fout), 0, 1);
 
         var dst = new Win32.POINT(minX, minY);
         var size = new Win32.SIZE(W, H);

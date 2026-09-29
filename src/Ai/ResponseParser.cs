@@ -13,8 +13,11 @@ namespace InGameCompanion.Ai;
 ///   "@@MEM {json}"      → son satır, hafıza güncellemesi (HUD'da asla gösterilmez)
 /// İşaretçinin parçalar hâlinde gelebileceği durumlar için kuyruk tutulur.
 /// </summary>
-/// <summary>Ekranda gösterilecek bir nokta: x,y 0-1000 ölçeğinde (Görüntü 1'e göre).</summary>
-internal sealed record PointMark(double X, double Y, string Label, int Step);
+/// <summary>
+/// Ekranda gösterilecek bir hedef: merkez X,Y ve (biliniyorsa) kutu boyu W,H; hepsi 0-1000 ölçeğinde,
+/// yakalanan tam kareye göre (W/H = karenin genişliği/yüksekliği yüzdesi × 10). W=0: boyut bilinmiyor.
+/// </summary>
+internal sealed record PointMark(double X, double Y, string Label, int Step, double W = 0, double H = 0);
 
 internal sealed class ResponseParser
 {
@@ -114,14 +117,21 @@ internal sealed class ResponseParser
         foreach (var line in MetaLines("@@POINT"))
         {
             if (ParseJson(line) is not JsonObject o) continue;
-            if (!TryNum(o["x"], out var x) || !TryNum(o["y"], out var y)) continue;
+            double x, y, bw = 0, bh = 0;
+            if (o["box"] is JsonArray box && box.Count == 4
+                && TryNum(box[0], out var y0) && TryNum(box[1], out var x0) && TryNum(box[2], out var y1) && TryNum(box[3], out var x1)
+                && y1 > y0 && x1 > x0)
+            {
+                x = (x0 + x1) / 2; y = (y0 + y1) / 2; bw = x1 - x0; bh = y1 - y0;
+            }
+            else if (!TryNum(o["x"], out x) || !TryNum(o["y"], out y)) continue;
             if (x < 0 || x > 1000 || y < 0 || y > 1000) continue;
             string label = "";
             try { label = (o["label"]?.GetValue<string>() ?? "").Trim(); } catch { }
             if (label.Length > 40) label = label[..40];
             int step = list.Count + 1;
             if (TryNum(o["step"], out var st) && st >= 1 && st <= 99) step = (int)st;
-            list.Add(new PointMark(x, y, label, step));
+            list.Add(new PointMark(x, y, label, step, bw, bh));
         }
         return list.OrderBy(p => p.Step).Take(4).ToList();
     }

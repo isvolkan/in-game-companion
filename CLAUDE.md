@@ -48,7 +48,8 @@ Yapay zekanın uyması gereken kurallar:
 | **Uçtan uca cevap** | ⚠️ 429 nedeni bulundu ve v0.2.2'de düzeltildi (aşağıya bak). Gerçek oyunda henüz denenmedi |
 | HUD çizimi, odak, click-through | ⚠️ Gerçek oyunda doğrulanmadı. Başlangıçta "hazır" bilgi kutusu ve hata kutusu görüldü |
 | Hafıza (v0.2) | ✅ Linux'ta birim testleri geçti. Gerçek kullanımda doğrulanmadı |
-| Ayar dosyasını otomatik yeniden yükleme (v0.2.1) | ✅ Kodda var. Kullanıcı henüz yeniden derlemedi |
+| Ayar dosyasını otomatik yeniden yükleme | ✅ v0.5.0'da gerçekten eklendi (v0.2.1 notu yanlıştı: o sürümde kodda yoktu). `Program.cs` içinde FileSystemWatcher + 600 ms debounce |
+| İşaret hassasiyeti | ✅ Kutu + kırpma ile ince ayar; gerçek harita ekranında ölçüldü (bkz. CHANGELOG v0.5.0). Gerçek oyunda kullanıcı doğrulaması bekleniyor |
 
 ### ✅ Çözülen sorun: Gemini 429 (v0.2.2)
 
@@ -107,6 +108,11 @@ src/Ui/HistoryPanel.cs    (v0.3) Önceki sorular paneli: tıklanabilir, odak ala
 src/Ai/LiveTranscriber.cs (v0.3) Gemini Live WebSocket ile konuşurken canlı yazı
 src/Ui/MarkerOverlay.cs   (v0.4) "Şuna bas" işaretleri: tıklamayı geçiren küçük katmanlı pencere, nabız halkası + etiket
 ```
+
+v0.5 notları: `HistoryPanel` iki görünümlü (Sohbet / Ayarlar). Sohbet kronolojik (en yeni altta, `_stick` ile alta yapışık).
+Ayar satırları `BuildRows` içinde; tıklayınca canlı `Settings` nesnesi değişir, `Save()` yazar, `SettingsChanged` kancası `Program.ApplyLoaded`'i çağırır.
+İşaret: `@@POINT {"box":[ymin,xmin,ymax,xmax],...}` (0–1000, tam kareye göre) → `MarkerOverlay.Show`; sonra `Companion.RefinePointsAsync`
+(ekrandan kare kırpma → `GeminiClient.LocateAsync` toplu sorgu → `MarkerOverlay.Update` ile yumuşak kayma). Kota: `GeminiClient._modelBlockedUntil`.
 
 v0.4 notları: `HistoryPanel` artık sohbet paneli (yazı kutusu, `Submitted` olayı, `BeginPending/AppendPending/EndPending`).
 `Companion.AskTyped` yazılı soruyu işler (ekran görüntüsü `panel.ReturnTarget` penceresinden, odak kırpması yok). Cevap uzunluğu `Prompt.LengthRule` içinde.

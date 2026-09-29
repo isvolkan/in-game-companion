@@ -51,10 +51,12 @@ internal static class Program
         var companion = new Companion(Current, overlay, panel, markers, detector, gemini, memory);
 
         MouseHook? hook = null;
+        string hookConfig = "";   // kancanın kurulduğu tuş + swallow; değişince yeniden kurulur
         void InstallHook()
         {
             hook?.Dispose();
             var s = Current();
+            hookConfig = s.Hotkey + "|" + s.SwallowHotkey;
             hook = new MouseHook(s.Hotkey, s.SwallowHotkey);
             hook.ShouldHandle = companion.ShouldHandle;
             hook.Pressed += companion.OnPressed;
@@ -71,20 +73,57 @@ internal static class Program
         }
 
         using var tray = new TrayIcon($"Oyun Asistanı — {hook!.ButtonLabel} basılı tut");
-        tray.AddMenuItem("Ayarları aç (settings.json)", () => OpenSettings());
-        tray.AddMenuItem("Ayarları yeniden yükle", () =>
+
+        // settings.json'dan (ya da panelden) gelen değişiklikleri uygula. UI iş parçacığında çağrılır.
+        DateTime selfSaveUntil = DateTime.MinValue;   // paneldeki kendi kaydımızın yankısını sessiz geç
+        void ApplyLoaded(bool announce)
+        {
+            detector.ClearCache();
+            if (hookConfig != Current().Hotkey + "|" + Current().SwallowHotkey) InstallHook();
+            tray.SetTooltip($"Oyun Asistanı — {hook!.ButtonLabel} basılı tut");
+            if (announce)
+                overlay.ShowInfo("Ayarlar yüklendi", $"Model: **{Current().Model}** · Tuş: **{hook.ButtonLabel}**", 4);
+        }
+        void ReloadFromDisk(bool announce)
         {
             try
             {
                 Volatile.Write(ref _settings, Settings.Load());
-                detector.ClearCache();
-                InstallHook();
-                tray.SetTooltip($"Oyun Asistanı — {hook!.ButtonLabel} basılı tut");
-                overlay.ShowInfo("Ayarlar yüklendi", $"Model: **{Current().Model}** · Tuş: **{hook.ButtonLabel}**", 4);
+                Log.Info("settings.json yeniden yüklendi");
+                ApplyLoaded(announce);
             }
             catch (Exception ex) { overlay.ShowError("Ayarlar yüklenemedi: " + ex.Message); }
-        });
+        }
+
+        panel.SettingsChanged = () =>
+        {
+            selfSaveUntil = DateTime.UtcNow.AddSeconds(3);
+            ApplyLoaded(announce: false);   // panel zaten canlı ayar nesnesini değiştirdi
+        };
+
+        // settings.json'u Not Defteri'nde elle düzenleyince kendiliğinden yeniden yükle (600 ms bekleyip)
+        FileSystemWatcher? watcher = null;
+        System.Threading.Timer? debounce = null;
+        try
+        {
+            watcher = new FileSystemWatcher(Settings.BaseDir, "settings.json")
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
+                EnableRaisingEvents = true,
+            };
+            debounce = new System.Threading.Timer(_ =>
+                overlay.Invoke(o => ReloadFromDisk(announce: DateTime.UtcNow > selfSaveUntil)), null, Timeout.Infinite, Timeout.Infinite);
+            FileSystemEventHandler onChange = (_, _) => debounce.Change(600, Timeout.Infinite);
+            watcher.Changed += onChange;
+            watcher.Created += onChange;
+            watcher.Renamed += (_, _) => debounce.Change(600, Timeout.Infinite);
+        }
+        catch (Exception ex) { Log.Warn("settings.json izlenemedi: " + ex.Message); }
+
         tray.AddMenuItem("Sohbet / önceki sorular…", () => companion.OpenHistory());
+        tray.AddMenuItem("Ayarlar…", () => companion.OpenHistory(settingsView: true));
+        tray.AddMenuItem("settings.json'u aç (gelişmiş)", () => OpenSettings());
+        tray.AddMenuItem("Ayarları yeniden yükle", () => ReloadFromDisk(announce: true));
         tray.AddMenuItem("Hafıza klasörünü aç", () => { Directory.CreateDirectory(GameMemoryStore.Dir); OpenFile(GameMemoryStore.Dir); });
         tray.AddMenuItem("Son oyunun hafızasını sil…", () =>
         {
@@ -108,7 +147,7 @@ internal static class Program
             "- Bu kutu tıklamaları **arkaya geçirir**\n- Odağı oyundan **çalmaz**\n- Birkaç saniye sonra kendiliğinden kaybolur", 6));
         tray.AddSeparator();
         tray.AddMenuItem("Çıkış", () => Win32.PostQuitMessage(0));
-        tray.DoubleClicked += () => OpenSettings();
+        tray.DoubleClicked += () => companion.OpenHistory();
 
         // Başlangıç bilgisi
         if (string.IsNullOrEmpty(Current().ResolvedApiKey))
@@ -130,6 +169,8 @@ internal static class Program
             Win32.DispatchMessageW(ref msg);
         }
 
+        watcher?.Dispose();
+        debounce?.Dispose();
         hook?.Dispose();
         markers.Dispose();
         panel.Dispose();

@@ -1,4 +1,4 @@
-# Oyun Asistanı (In-Game AI Companion) — v0.4.0
+# Oyun Asistanı (In-Game AI Companion) — v0.5.0
 
 Oyunu durdurmadan sesli soru sor, cevap sağ üst köşede şeffaf bir kutuda aksın.
 İlk hedef oyun: **Crimson Desert**. The Witcher 3, BG3, Elden Ring ve Cyberpunk için de ayar hazır.
@@ -17,7 +17,8 @@ Oyunu durdurmadan sesli soru sor, cevap sağ üst köşede şeffaf bir kutuda ak
 |---|---|
 | **Mouse 5**'i basılı tut → konuş → bırak | Ekran + ses gönderilir, cevap akar |
 | Mouse 5'e **kısa dokun** (<0,35 sn) | Kutuyu kapatır, süren isteği iptal eder |
-| Mouse 5'e **çift dokun** | Sohbet paneli açılır: altındaki kutuya **yazıp Enter'a basarak** soru sorabilirsin. Üstte önceki sorular: tıkla → cevabı aç/kapat, tekerlek → kaydır. Esc, Mouse 5 ya da dışarı tıklama kapatır |
+| Mouse 5'e **çift dokun** (ya da tepsi → **Sohbet…**) | Sohbet paneli açılır. Mesajlar yukarıdan aşağı akar, en yeni altta; altındaki kutuya **yazıp Enter'a basarak** soru sorabilirsin. Eski cevaplara tıkla → aç/kapat, tekerlek → kaydır. Esc, Mouse 5 ya da dışarı tıklama kapatır |
+| Panelde sağ üstteki **Ayarlar** düğmesi (ya da tepsi → **Ayarlar…**) | Uygulama içi ayar ekranı: model, cevap uzunluğu, işaret, canlı yazı, kısayol tuşu, API anahtarı… Satıra tıkla → değer değişir ve anında kaydedilir |
 | "Haritayı nerede açarım?", "önce envantere, sonra haritaya bas" | Model hedefi ekranda görürse üstüne **nabız gibi atan halka + etiket** çizer (çok adımlıysa numaralı). Mouse 5'e dokunmak ya da yeni soru kapatır |
 | Konuşurken | Söylediklerin kutuda canlı yazı olarak görünür (`LiveTranscription`) |
 | Cevap akarken yeniden basılı tut | Eski istek iptal olur, yeni soru başlar |
@@ -67,7 +68,10 @@ Sesli sorular için `AnswerLength`, yazılı sohbet için `TypedAnswerLength` ay
 Model bir şeyin yerini söylerken ekranda AÇIKÇA görüyorsa, cevabın sonuna gizli bir `@@POINT {"x":..,"y":..,"label":..,"step":..}`
 satırı ekler (0–1000 ölçeğinde, tam kareye göre). Uygulama bunu ekran pikseline çevirip oyunun üstüne halka çizer.
 İşaretler tıklamayı geçirir, odağı çalmaz ve ekran görüntülerine girmez. Ayarlar: `PointerMarkers` (aç/kapat), `MarkerSeconds` (kalma süresi).
-Konum modelin tahminidir; birkaç on piksel kayabilir, bu yüzden halka geniş tutuldu. Hedef ekranda değilse (kapalı menü gibi) işaret çıkmaz, cevap yazıyla anlatır.
+Konumu iki adımda bulur: (1) cevapla birlikte modelin verdiği **sınırlayıcı kutu** halkayı hemen çizer; (2) `PointerRefine` açıksa hedefin çevresi
+ekrandan kırpılıp büyütülür ve model bir kez daha, yakından bakar (tek toplu istek, hafif model `PointerRefineModel`). Halka yeni konuma yumuşakça kayar.
+Gerçek bir harita ekranında ilk tahmin küçük bir simgede 100 piksele kadar şaşabilirken ince ayardan sonra 1–5 piksele indi.
+Halkanın boyu hedefin kutusuna uyar. Hedef ekranda değilse (kapalı menü gibi) işaret çıkmaz, cevap yazıyla anlatır.
 
 ## Mimari kararlar
 
@@ -103,6 +107,13 @@ Konum modelin tahminidir; birkaç on piksel kayabilir, bu yüzden halka geniş t
 - `Overlay.*`: Genişlik, kenar boşlukları, yazı boyutu, saydamlık, vurgu rengi ve ekranda kalma süreleri.
 
 Her sorgu `logs\companion-YYYYMMDD.log` dosyasına yazılır: yakalama süresi, ilk token gecikmesi, toplam süre, token sayıları, yapılan web aramaları, soru ve cevap.
+
+## Ücretsiz katman ve kota
+
+Ücretsiz Gemini anahtarında `gemini-3.8-flash` için istek sınırı düşüktür (429 mesajında `limit: 20` yazar) ve sık "yoğun talep" (503) verir.
+Uygulama bu durumda önce aynı modeli bir kez daha dener, olmazsa `FallbackModel`'e (`gemini-3.5-flash-lite`) geçer; kotası dolan modeli
+yanıttaki bekleme süresi kadar atlar. Kutuda uyarı görmek istersen `ShowModelNotice: true` yap (log'a her zaman yazılır).
+Her işaret ince ayarı ve yazılı/sesli soru ayrı bir istektir; denemeler kotayı hızlı harcayabilir.
 
 ## Bilinen sınırlar (v0.1)
 

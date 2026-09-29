@@ -84,6 +84,12 @@ internal sealed class Settings
     public bool PointerMarkers { get; set; } = true;
     /// <summary>İşaretlerin ekranda kalma süresi (sn). Mouse 5'e dokunmak ya da yeni soru hemen kapatır.</summary>
     public double MarkerSeconds { get; set; } = 14;
+    /// <summary>İşaret çıkınca hedefin çevresini kırpıp modele bir kez daha sorarak konumu hassaslaştırır (+1 istek, ~1-2 sn).</summary>
+    public bool PointerRefine { get; set; } = true;
+    /// <summary>Hassaslaştırma sorgusu için model (hafif model yeterince isabetli ve hızlı; kotayı ana modelden ayrı harcar).</summary>
+    public string PointerRefineModel { get; set; } = "gemini-3.5-flash-lite";
+    /// <summary>Yedek modele / aramasız cevaba geçildiğinde kutuda küçük bir uyarı göster (log'a her zaman yazılır).</summary>
+    public bool ShowModelNotice { get; set; } = false;
     public int RequestTimeoutSeconds { get; set; } = 45;
 
     /// <summary>XButton2 (Mouse 5) | XButton1 (Mouse 4) | Middle</summary>
@@ -161,7 +167,8 @@ internal sealed class Settings
         if (!text.Contains("\"Memory\"", StringComparison.OrdinalIgnoreCase) ||
             !text.Contains("\"FallbackModel\"", StringComparison.OrdinalIgnoreCase) ||
             !text.Contains("\"LiveTranscription\"", StringComparison.OrdinalIgnoreCase) ||
-            !text.Contains("\"AnswerLength\"", StringComparison.OrdinalIgnoreCase))
+            !text.Contains("\"AnswerLength\"", StringComparison.OrdinalIgnoreCase) ||
+            !text.Contains("\"PointerRefine\"", StringComparison.OrdinalIgnoreCase))
         {
             try { loaded.Save(); } catch { }
         }

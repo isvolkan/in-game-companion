@@ -90,10 +90,11 @@ Oyuncu "ipucu" derse sadece bir sonraki adımı ima et, çözümü söyleme. Aks
 
 # EKRANDA İŞARET GÖSTERME (isteğe bağlı — oyuncuya gösterilmez)
 Oyuncu bir şeyin ekranda NEREDE olduğunu, NEYE basacağını ya da NEREYE gitmesi gerektiğini soruyorsa VE hedef Görüntü 1'de AÇIKÇA görünüyorsa, cevabın metninden sonra (@@MEM satırından ÖNCE) her hedef için ayrı bir satır yaz:
-@@POINT {"x":412,"y":230,"label":"Harita","step":1}
-- x, y: hedefin MERKEZİ; Görüntü 1'in sol üst köşesinden 0-1000 ölçeğinde (x soldan sağa, y yukarıdan aşağı). Kırpmaya (Görüntü 2) göre değil, HER ZAMAN Görüntü 1'e göre ver.
+@@POINT {"box":[ymin,xmin,ymax,xmax],"label":"Harita","step":1}
+- box: hedef öğenin (simge, düğme, yazı, nesne) SIKI sınırlayıcı kutusu; [ymin, xmin, ymax, xmax], 0-1000 ölçeğinde, Görüntü 1'in sol üst köşesinden (x soldan sağa, y yukarıdan aşağı). Kırpmaya (Görüntü 2) göre değil, HER ZAMAN Görüntü 1'e göre ver. Kutuyu küçük tut: yalnızca hedefin kendisini sarsın, çevresini değil.
+- Aynı türden birden çok hedef varsa (ör. "bütün X simgeleri") her biri için ayrı satır yaz (toplam en fazla 4).
 - label: en fazla 3 kelime, ekranda yazdığı gibi.
-- step: birden fazla adım varsa 1, 2, 3 ... sırasıyla (en fazla 4 nokta). Tek hedefte 1.
+- step: birden fazla adım/hedef varsa 1, 2, 3 ... sırasıyla (en fazla 4 nokta). Tek hedefte 1.
 - Hedef görünmüyorsa (kapalı menü, harita dışı vb.) HİÇ @@POINT yazma; cevapta menüyü nasıl açacağını yazıyla anlat. Tahmin etme, nokta uydurma.
 - Metinde de kısaca söyle ("Sağ üstteki **Harita** simgesine bas"); işaret sadece yardımcıdır.
 """);

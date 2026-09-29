@@ -2,6 +2,18 @@
 
 Her sürüm GitHub'da `vX.Y.Z` etiketiyle (tag) işaretlenir.
 
+## v0.5.0 — 29.09.2026
+- **Daha isabetli işaret:** Model artık hedefin sıkı sınırlayıcı kutusunu verir (halkanın boyu buna uyar). Ardından hedefin çevresi
+  ekrandan kırpılıp büyütülür ve model bir kez daha, yakından bakar (`PointerRefine`, tek toplu istek, `PointerRefineModel`);
+  halka yeni konuma yumuşakça kayar. Gerçek harita ekranında ilk tahmin bir simgede 107 px şaşarken ince ayardan sonra 2 px'e indi.
+- **Uygulama içi ayarlar:** Sohbet panelinde **Ayarlar** düğmesi (ve tepsi → **Ayarlar…**). Model, yedek model, cevap uzunlukları,
+  işaret, hassaslaştırma, işaret süresi, canlı yazı, web araması, spoiler, kısayol tuşu, API anahtarı (panodan yapıştır). Anında kaydedilir.
+- **Sohbet yukarıdan aşağı akar:** Eski mesajlar üstte, en yeni altta; yeni cevap gelince otomatik alta kayar.
+- **`settings.json` artık gerçekten kendiliğinden yeniden yüklenir** (FileSystemWatcher, 600 ms). v0.2.1 notlarında yazıyordu
+  ama depodaki kodda yoktu.
+- **Kota dostu:** 429 alan model, yanıttaki bekleme süresi kadar atlanır (her soruda boşuna denenmez). 503'te önce aynı model bir kez daha denenir.
+- Yedek model uyarısı artık varsayılan olarak kutuda gösterilmez (`ShowModelNotice`); log'a yazılmaya devam eder.
+
 ## v0.4.0 — 29.09.2026
 - **Ekranda işaret:** Model hedefi ekranda görürse üstüne nabız gibi atan halka + etiket çizilir; çok adımlı yönlendirmede numaralı.
   Gizli `@@POINT` satırı, tıklamayı geçiren ayrı katmanlı pencere (`MarkerOverlay`). Ayarlar: `PointerMarkers`, `MarkerSeconds`.
@@ -30,6 +42,7 @@ Her sürüm GitHub'da `vX.Y.Z` etiketiyle (tag) işaretlenir.
 
 ## v0.2.1
 - `settings.json` değişince ayarlar otomatik yeniden yüklenir (FileSystemWatcher, 600 ms debounce).
+  *(Not: Bu madde Cowork notlarında yazıyordu ama depodaki kodda yoktu; gerçekten v0.5.0'da eklendi.)*
 
 ## v0.2
 - Oyun başına kalıcı hafıza (`dist/memory/<Oyun>.json`): bölüm/görev/bölge takibi, notlar,
