@@ -378,7 +378,8 @@ internal sealed class GeminiClient
     /// Hedefleri TAM karede yeniden konumlandırır (güçlü model gerekir; hafif model atlanır, hiçbiri yoksa hepsi null).
     /// Hafif modelin yoğun ekranlarda (yetenek ağacı gibi) yanlış öğeyi göstermesini düzeltmek için.
     /// </summary>
-    public Task<double[]?[]> LocateOnFrameAsync(byte[] fullJpeg, IReadOnlyList<(string Label, string Desc)> targets, string context, CancellationToken ct)
+    public Task<double[]?[]> LocateOnFrameAsync(byte[] fullJpeg, IReadOnlyList<(string Label, string Desc)> targets, string context, CancellationToken ct,
+                                                bool allowLite = false)
     {
         var parts = new JsonArray
         {
@@ -402,7 +403,7 @@ internal sealed class GeminiClient
                   "Birbirine benzeyen birçok öğe olabilir: tarife, bağlama, seçili/vurgulu olma ve komşuluklara EN ÇOK uyanı seç. " +
                   "Hangisi olduğunu kesin ayırt edemiyorsan none:true yaz; tahmin etme.");
         parts.Add(new JsonObject { ["text"] = sb.ToString() });
-        return LocateCoreAsync(parts, targets.Count, strongOnly: true, ct);
+        return LocateCoreAsync(parts, targets.Count, strongOnly: !allowLite, ct);
     }
 
     private async Task<double[]?[]> LocateCoreAsync(JsonArray parts, int count, bool strongOnly, CancellationToken ct)

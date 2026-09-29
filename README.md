@@ -1,4 +1,4 @@
-# Oyun Asistanı (In-Game AI Companion) — v0.8.0
+# Oyun Asistanı (In-Game AI Companion) — v0.8.1
 
 Oyunu durdurmadan sesli soru sor, cevap sağ üst köşede şeffaf bir kutuda aksın.
 İlk hedef oyun: **Crimson Desert**. The Witcher 3, BG3, Elden Ring ve Cyberpunk için de ayar hazır.
@@ -105,7 +105,9 @@ Model bir şeyin yerini söylerken ekranda AÇIKÇA görüyorsa, cevabın sonuna
   "imleci düğümün üstüne getir, adı sağ panelde çıkar" der. İşaretin dayanağı (`basis`): `ad` (adı yazıyor), `seçili` (paneldeki öğenin vurgulu karşılığı),
   `soru` (sorudaki renk/şekil/konum tarifine uyuyor). `tahmin` ya da `özellik` gerekçeli işaretler hiç gösterilmez.
 - **Doğrulanamayan işaret**: Cevabı hafif model verdiyse ve güçlü model kotası yüzünden doğrulama yapılamadıysa: adı ekranda yazan hedefler kesik çizgili,
-  soluk, `≈` etiketli **tahmini** halka olarak gösterilir; yalnızca görünüşe dayananlar (ör. adsız ağaç düğümü) hiç gösterilmez.
+  soluk, `≈` etiketli **tahmini** halka olarak gösterilir; bu hedefler ayrıca hafif modelle **odaklı bir tam-kare sorguyla yeniden konumlandırılır**
+  (ölçümde cevapla gelen ilk kutudan tutarlı biçimde daha isabetli). Yalnızca görünüşe dayananlar (ör. adsız ağaç düğümü) hiç gösterilmez.
+  Gerçek isabet için güçlü modeller gerekir (günlük ücretsiz kotaları sınırlı).
 
 Konum doğruluğu (gerçek 1080p ekranlarda ölçüldü):
 - Güçlü modeller (`gemini-3.8-flash`, `3.5-flash`, `3-flash-preview`) yoğun bir yetenek ağacında bile hedefi 3–10 piksel içinde gösterir.

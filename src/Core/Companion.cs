@@ -402,6 +402,7 @@ internal sealed class Companion
                 }
                 if (id != Volatile.Read(ref _session)) return;
                 int moved = 0, hidden = 0;
+                var needLite = new List<int>();
                 double drift = 0;
                 for (int i = 0; i < current.Count; i++)
                 {
@@ -411,7 +412,7 @@ internal sealed class Companion
                         // Güçlü model kullanılamadı ya da hedefi ayırt edemedi: hafif modelin tahmini doğrulanamadı.
                         // Adı ekranda yazan hedef ("ad") "tahmini" gösterilir; yalnızca görünüşe/seçime dayananlar (ör. adsız ağaç
                         // düğümleri) hiç gösterilmez: hafif model bunlarda yüzlerce piksel şaşıyor, yanlış yer göstermek göstermemekten kötü.
-                        if (current[i].Basis == "ad") current[i] = current[i] with { Uncertain = true };
+                        if (current[i].Basis == "ad") { current[i] = current[i] with { Uncertain = true }; needLite.Add(i); }
                         else { current[i] = current[i] with { Hidden = true }; hidden++; }
                         continue;
                     }
@@ -420,6 +421,30 @@ internal sealed class Companion
                     drift += Math.Sqrt(Math.Pow((cx - current[i].X) / 1000 * W, 2) + Math.Pow((cy - current[i].Y) / 1000 * H, 2));
                     current[i] = current[i] with { X = cx, Y = cy, W = bw, H = bh };
                     moved++;
+                }
+                // Güçlü model yoksa: adı yazan hedefleri hafif modelle ODAKLI bir tam-kare sorguyla yeniden konumlandır
+                // (ölçüm: hafif modelin cevapla birlikte verdiği ilk kutudan tutarlı biçimde daha isabetli; işaret yine "tahmini" kalır)
+                if (needLite.Count > 0)
+                {
+                    try
+                    {
+                        var lt = needLite.Select(i => (string.IsNullOrWhiteSpace(current[i].Label) ? "işaretlenen nesne" : current[i].Label, current[i].Desc)).ToList();
+                        var lb = await _gemini.LocateOnFrameAsync(cap.FullJpeg, lt, context, ct, allowLite: true).ConfigureAwait(false);
+                        int lm = 0;
+                        for (int k = 0; k < needLite.Count; k++)
+                        {
+                            var bb = lb[k];
+                            if (bb == null) continue;
+                            int i = needLite[k];
+                            current[i] = current[i] with { X = (bb[1] + bb[3]) / 2, Y = (bb[0] + bb[2]) / 2, W = bb[3] - bb[1], H = bb[2] - bb[0] };
+                            lm++;
+                        }
+                        Log.Info($"  İşaret yeniden konumlandı (hafif model, odaklı sorgu): {lm}/{needLite.Count} hedef");
+                    }
+                    catch (Exception ex) when (!ct.IsCancellationRequested)
+                    {
+                        Log.Warn("Odaklı konum sorgusu başarısız: " + ex.Message.Split((char)10)[0]);
+                    }
                 }
                 anyChange = true;
                 Log.Info($"  İşaret doğrulama (güçlü model, tam kare): {moved}/{current.Count} hedef doğrulandı" +

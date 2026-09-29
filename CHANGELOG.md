@@ -2,6 +2,13 @@
 
 Her sürüm GitHub'da `vX.Y.Z` etiketiyle (tag) işaretlenir.
 
+## v0.8.1 — 29.09.2026
+- **Hafif modelde daha isabetli işaret:** Güçlü modelin kotası bittiğinde adı ekranda yazan hedefler (ör. harita tabelaları, menü sekmeleri) artık hafif modelle
+  **odaklı bir tam-kare sorguyla yeniden konumlandırılıyor** (halka yine "≈ tahmini" kalır). Kullanıcının telefon fotoğraflarıyla ölçüm: ilk tahmin ortalama 44–75 px,
+  odaklı sorgu 36–49 px şaşıyor. Bir de iki tahmini ortalamayı denedik: ek kazanç yok, eklenmedi.
+- Denendi ve geri alındı: "yalnızca simgeyi kutula" istemi hafif modelde kutuları büyüttü (ortalama 75 px); istem eski haline döndü.
+- Not: Kutular çoğu zaman simgenin yanındaki yazıyı da sardığı için halkanın ortası simgenin biraz altında kalabiliyor; bu sınır güçlü modellerde (3–10 px) neredeyse yok.
+
 ## v0.8.0 — 29.09.2026
 - **Sohbet yönetimi:** Oyun başına birden çok sohbet. Panelde **Sohbetler** (liste, aç, sil, tümünü sil), **＋ Yeni** (temiz bağlam), **Oyunlar** (oyun değiştirici,
   başka oyunun sohbetleri salt okunur) ve mesaj başına **✕ sil**. Silmeler satır içi "Emin misin?" onayıyla (oyunda odağı kaybettirmez).
